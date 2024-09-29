@@ -1,0 +1,3019 @@
+# 提升权限
+import elevate
+elevate.elevate(show_console=False)
+
+# 代码注释库
+from typing import Union , Optional
+# 基础库
+import os, sys, shutil, datetime, time, threading, io, mmap, re
+from copy import copy
+# 配置文件读取，与检测文件类型的库
+import configparser, filetype
+# 弹小窗的库
+import tkinter, pyautogui
+# 一些调用windows系统dll需要的库
+import pythoncom, win32api, win32con, win32file
+# 硬件检测的库
+import wmi, pySMART, psutil
+
+# 代码源自“better_zipfile”库（https://pypi.org/project/better-zipfile/  ， https://github.com/aplmikex/better_zipfile/blob/main/better_zipfile/fixcharset_zipfile.py），
+# 自己稍作修改，放在与脚本同目录下的【my_custom_zipfile.py】
+#
+# 可以有效防止解析压缩包时，以及解压时，中文文件名出现乱码，
+# 虽然说livp的zip压缩包里面全是英文名文件，但是觉得还是得事先准备准备
+#
+# 使用这个库需提前安装：【charset-mnbvc】，版本大于等于0.0.12
+# 
+# 用下面这句import之后，用法和原本python自带的zipfile无差别
+import my_custom_zipfile as zipfile
+
+## 图像库和插件
+# 处理raw图像的库
+import rawpy
+# 转换SVG的库
+import cairosvg
+# 读取PDF的库，以及用于PDF中图片去重（多个xref指向同一个图片的数据）的crc32校验库
+import pymupdf, crc32c
+# Pillow
+from PIL import Image , ImageOps
+# 挂在Pillow上的jpls（JPEG-LS,JPEG-Lossless）编解码插件（https://pypi.org/project/pillow-jpls/）
+# PS：战未来的“屠龙宝刀”😅
+import pillow_jpls
+# 挂在Pillow上的heic、avif编解码插件（https://pypi.org/project/pillow-heif/）
+from pillow_heif import register_heif_opener, register_avif_opener
+register_heif_opener(
+    # 参见：https://pillow-heif.readthedocs.io/en/latest/options.html
+    quality=-1,
+    thumbnails=False,
+    save_to_12bit=True,
+    allow_incorrect_headers=True,
+)
+register_avif_opener(
+    # 参见：https://pillow-heif.readthedocs.io/en/latest/options.html
+    quality=-1,
+    thumbnails=False,
+    save_to_12bit=True,
+    allow_incorrect_headers=True,
+)
+
+
+
+# 程序自身所在的文件夹，和程序的名字
+# 程序自身所在的文件夹为脚本或者exe所在目录，记录为program_dir，定位到处理目标处理完后，还要返回来
+program_dir , app_exe = os.path.split(__file__)
+app_exe = app_exe.replace(".py",".exe")
+# 解析传入的命令行（路径）
+args=[os.path.abspath(i) for i in sys.argv[1:]]
+
+
+
+
+# 展示打赏信息的py，位于与脚本同目录下的【my_sponsor_info.py】
+#
+# 为了不让某些二道贩子轻易替换打赏信息，让我给他们数钱，
+# 此py文件里的show_sponsor_info()函数，
+# 在分享出去的源码里是空的，请各位理解一下。
+# 毕竟所有的核心转换功能的源码我都免费分享出去了。
+#
+# 我也并不能阻止有实力的人，在我分享出去的源码里，
+# 稍微改动下加上自己的收款码赚钱，或者通过逆向等手段强行替换打赏信息。
+# 就如“防君子不防小人”，
+# 如果想用我的程序或者源码赚点钱，只要是想，终究防不住的。
+#
+# 不过我这边最起码的防范措施还是得做一下。
+#
+# 希望那些准备拿来我的源代码吃饭的人，到时候能有点人性，
+# 人在做天在看，钱我不指望你能分我，最起码的注明原作者信息什么的工作你得做好
+# 
+from my_sponsor_info import with_sponsor , show_sponsor_info
+if with_sponsor:
+    close_window_button_list = ["完成","查看运行日志","给作者加个鸡腿"]
+else:
+    close_window_button_list = ["完成","查看运行日志"]
+
+
+
+
+
+
+
+
+### 配置
+
+## 默认配置文件
+# 配置文件名
+config_file = os.path.abspath(f"{program_dir}\\..\\配置.ini")
+# 默认的配置文件放在与脚本同目录下的【my_custom_config_info.py】里了，
+# 如果放在这的话，长度太长
+from my_custom_config_info import default_config_content
+
+## 日志文件配置
+# 日志文件名
+log_file = os.path.abspath(f"{program_dir}\\..\\运行日志.log")
+# 暂时存放本次运行的日志，运行结尾会跟之前的合并，方便把最新的记录放在文件最前面
+tmp_log_file = os.path.abspath(f"{program_dir}\\..\\tmp.log")
+
+## 输出前后缀设置
+# 输入为文件夹时，输出文件夹的前缀（文件夹的目录结构，以及其中输出的文件名保持不变）
+setted_output_prefix = "【输出】"
+# 输入为单文件时，输出文件的后缀，“【输出】”两字加在前面比较丑
+single_file_output_suffix = ".output"
+
+'''
+##保留的参数
+# 本来打算放出错的文件的，想想还是先通过看日志确定哪些出错吧，
+# 毕竟还原目录结构的话，出错文件只有一两个的话，找起来比较麻烦
+setted_error_prefix = "【出错】"
+'''
+
+## 单图片输入限制大小：2 GiB（2 × 1024^3 字节）
+# 根据pillow文档来的，实际上文档的意思估计是图片完全加载好后，所占用的内存限制
+# 虽然图片加载前的尺寸可以大于或小于这个值，但还是设置为 2 GiB 比较保守吧
+filesize_limit = 2 * (1024**3)
+
+## 图像输出配置
+# 目标扩展名
+target_ext = "jpg"
+# 目标格式，供pillow保存时的“format=”选项使用
+target_format = "JPEG"
+
+
+
+
+
+# ===============   ★★★ 解析配置文件出错时，备用的默认配置 ★★★   ===============
+
+## 弹窗行为管理配置
+# 1.【弹窗总开关】
+pop_window_main_switch = True
+
+# 2.【单纯双击启动程序“any_pic_2_jpg.exe” / “to_jpg.bat”，
+#    没有路径传入时，此程序对应的表现】
+#
+#   非负整数，可取值：0 | 1 | 2 | 3 | 4 | 5
+#
+#   0：弹窗提示后，打开 ⇨ 配置文件【配置.ini】供修改编辑。（新手提示）
+#
+#   1：不弹窗，直接打开 ⇨ 配置文件【配置.ini】供修改编辑。（熟悉后可改为这个）
+#
+#   2：弹窗提示后，打开 ⇨ 运行日志【运行日志.log】供查看。（2、3是补充备用的快捷方式）
+#    
+#   3：不弹窗，直接打开 ⇨ 运行日志【运行日志.log】供查看。
+#
+#
+#
+#   4：仅弹窗提醒，但不打开配置文件【配置.ini】和【运行日志.log】其中任何一个。
+#
+#   5：不弹窗，也不打开配置文件【配置.ini】和【运行日志.log】其中任何一个，
+#      只在cmd终端留下“无路径传入”的提示。
+to_jpg_exe_no_path_parameter_behavior = 1
+
+# 3.【单纯双击启动程序“any_pic_2_png.exe” / “to_png.bat”，
+#    没有路径传入时，此程序对应的表现】
+# 与上面的2类似
+to_png_exe_no_path_parameter_behavior = 5
+
+# 4.【打开处理完毕时的弹窗】
+show_finish_window = True
+
+# 5.【打开关键错误弹窗】
+show_critical_error_window = True
+
+
+
+
+## 文件夹转移方法配置
+# 6.【复制策略】
+# 输入为文件夹时，其中文件出错或跳过时的复制策略
+# 非负整数，可取值：0|1|2
+#     0：默认，先尝试硬链接，不行再拷贝
+#     1：只用拷贝
+#     2：只用硬链接
+copy_method = 0
+
+
+# 7.【输出的jpg图片质量】
+# 正整数，取值范围：(0-100]，左开右闭（质量为0的jpg我觉得有点危险）
+jpg_quality = 98
+# pillow文档里推荐的是95，再往上也不是不可以，不过文件大小估计会显著增大，因为会禁用一些压缩算法
+# 不过处理速度因此明显变快，我这边测试选取的是98，98比95明显快些
+# 需要高质量输出的场景下，可以改为100。
+# 说明参见：https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg-saving
+
+# 8.【jpg子采样选项】
+# 非负整数，可取值：0|1|2 ，其所代表含义如下所示
+#     0：4:4:4
+#     1：4:2:2
+#     2：4:2:0
+jpg_subsample_option = 0
+#这边测试由1到0的尺寸增加不大，为了色彩，推荐选择“0”
+# 说明参见：https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg-saving
+
+# 9.【png无损压缩（zip）的等级】
+# 非负整数，取值范围：[0-9]，双闭区间
+# 压缩前后数据都是无损的，数字越高，zip压缩等级越高，耗时间和CPU越高，
+# 注意！数值为0时不压缩，输出的文件非常大！不推荐！
+png_compress_level = 1
+# 自己测试过，compress_level在0-1变化过程中文件显著变小，0是不压缩的，1是无损急速压缩，
+# 数字再往上文件尺寸减少的量级几乎可以忽略，而且速度越来越慢，还不如用1快速，
+# 毕竟现在很少在乎这么点图片文件尺寸的大小了，而且还要图片是无损的。
+# 说明参见：https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#png-saving
+
+
+## 格式选择配置
+
+# 10.【用户自定义排除的格式】
+# 这边默认排除掉一些常见的、能轻松打开的图像格式
+user_defined_excluded_format_set = {"JPEG" , "PNG" , "BMP" , "ICO" , "PSD"}
+
+# 11.【排除已经是目标格式的文件】
+exclude_target_format = True
+
+# 12.【是否转换RAW图片】
+convert_raw  = True
+
+
+# 13.【是否转换苹果LIVP动态照片】
+convert_livp = True
+# 14.【苹果LIVP动态照片直接输出，不转换】
+livp_direct_output = False
+
+
+# 15.【是否转换华为动态照片】
+convert_hwlp = True
+# 16.【华为动态照片直接输出，不转换】
+hwlp_direct_output = True
+
+
+# 17.【是否转换PDF】
+convert_pdf = True
+# 18.【PDF转换模式】
+#     0:默认，导出PDF中嵌入的图片，和PDF整个页面的渲染图
+#     1:仅导出PDF中嵌入的图片
+#     2:仅导出整个页面的渲染图
+pdf_mode = 0
+# 19.【PDF内嵌图片直接输出】
+pdf_inside_pic_direct_output = True
+# 20.【PDF页面渲染图缩放比例】（浮点数）
+pdf_page_render_zoom_ratio = 2.0
+
+
+# 21.【是否转换SVG】
+convert_svg = True
+# 22.【SVG转换后直接输出PNG】
+svg_direct_output_png = True
+
+
+# 23.【是否转换微信加密的dat图片】
+convert_wechat_dat = True
+# 24.【微信dat图片解密后直接输出，不转换】
+wechat_dat_direct_output = True
+
+
+## exif设置
+# 25.【转换时是否保留RAW图片的exif】
+perserve_raw_pic_exif = False
+# 26.【转换时是否保留普通图片的exif】
+perserve_common_pic_exif = True
+# 27.【转换时是否使用exiftool额外增强保存一次exif】
+exif_enhance = False
+# 28.【调用exiftool后，是否整理覆写产生的磁盘碎片】
+#   0:默认
+#   1:总是
+#   2:从不
+defrag_after_exiftool = 0
+
+
+
+## 拷贝缓冲区大小设置和日志文件预分配大小
+# 29.【拷贝文件的内存缓冲区大小】
+# 正整数，单位：字节，配置文件输入单位：MiB
+copy_file_buffer_size = 256*1024**2
+# 30.【给日志文件预分配的空间】
+# 正整数，单位：字节，配置文件输入单位：MiB
+log_file_allocate_size = 10*1024**2
+
+
+# ===============   ★★★ 【结束行】解析配置文件出错时，备用的默认配置 ★★★   ===============
+
+
+
+
+# Pillow支持的格式
+supported_format_set = {
+    "AVIF" , "BLP" , "BMP" ,
+    "BUFR" , "CUR" , "DCX" ,
+    "DDS" , "DIB" , "EPS" ,
+    "FITS" , "FLI" , "FTEX" ,
+    "GBR" , "GIF" , "GRIB" ,
+    "HDF5" , "HEIF" , "ICNS" ,
+    "ICO" , "IM" , "IMT" ,
+    "IPTC" , "JPEG" , "JPEG-LS" ,
+    "JPEG2000" , "MCIDAS" , "MPEG" ,
+    "MSP" , "PCD" , "PCX" , "PIXAR" ,
+    "PNG" , "PPM" , "PSD" , "QOI" ,
+    "SGI" , "SPIDER" , "SUN" , "TGA" ,
+    "TIFF" , "WEBP" , "WMF" , "XBM" ,
+    "XPM" , "XVTHUMB" ,
+}
+
+# 额外支持的文件偏移量特征
+# 参考于：https://www.garykessler.net/library/file_sigs.html
+ex_File_Signatures_dict = \
+{
+    "image/eps-1" : 
+    (
+        (0 , os.SEEK_SET) ,
+
+        b"%!PS-Adobe-3.0 EPSF-3.0"
+    ),
+    
+    "image/eps-2" :
+    (
+        (0x1e , os.SEEK_SET) ,
+
+        b"%!PS-Adobe-3.0 EPSF-3.0"
+    ),
+    
+    "image/tga" :
+    (
+        (-18 , os.SEEK_END) ,
+
+        b"TRUEVISION-XFILE\x2e\x00"
+    ),
+    
+    "image/dds" :
+    (
+        (0 , os.SEEK_SET) ,
+
+        b"DDS"
+    ),
+    
+    "image/icns" :
+    (
+        (0 , os.SEEK_SET) ,
+
+        b"icns"
+    ),
+}
+
+
+# 尝试猜测微信dat图片类型的列表
+wechat_xor_decode_guess_tuple = \
+(
+    (
+        (0 , os.SEEK_SET) , b"\xFF\xD8" , "jpg" #jpg
+    ),
+    
+    (
+        (0 , os.SEEK_SET) , b"\x89PNG\x0D\x0A\x1A\x0A" , "png" #png
+    ),
+    
+    (
+        (0 , os.SEEK_SET) , b"GIF87a" , "gif" #gif-1
+    ),
+    
+    (
+        (0 , os.SEEK_SET) , b"GIF89a" , "gif" #gif-2
+    ),
+    
+    (
+        (8 , os.SEEK_SET) , b"WEBP" , "webp" #webp
+    ),
+    
+    (
+        (4 , os.SEEK_SET) , b"ftypheic" , "heic" #heic
+    ),
+    
+    (
+        (0 , os.SEEK_SET) , b"BM" , "bmp" #bmp
+    ),
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 自定义内存映射磁盘文件
+class my_custom_mmap(mmap.mmap):
+    # zipfile传入的fp需要有“.seekable”，mmap在python_3.8.6还不支持“.seekable”后缀，
+    # 这里手动添加
+    def seekable(self):
+        return True
+
+
+#当前时间
+def current_time() -> str:
+    return str(copy(datetime.datetime.now().time()))
+
+#显示并记录
+def log(content:str) -> None:
+    print(content,file=log_handle)
+    print(content)
+    return
+
+'''
+## 保留未使用的函数
+# 创建未处理错误文件输出文件夹
+def make_error_dir(origin_name:str) -> None:
+    global error_folder_name
+    error_folder_name = error_folder_name + origin_name
+
+    if (not os.path.exists(error_folder_name)):
+        os.mkdir(error_folder_name)
+    elif len(os.listdir(error_folder_name)) != 0:#文件夹为空，就不创建新的了
+        #防止冲突
+        time_infor = current_time().replace(":","-")
+        error_folder_name = "".join([error_folder_name,"【",time_infor,"】"])
+        os.mkdir(error_folder_name)
+
+    if folderlist:
+        os.chdir(error_folder_name)
+        for folder in folderlist:
+            os.mkdir(folder)
+        os.chdir("..")
+    
+    #无返回值
+    return
+'''
+
+# 获取单文件的输出文件名
+def make_single_out_name(basename:str , ext:str) -> str:
+    if os.path.exists(tmp := f"{basename}.{ext}"):
+        time_infor = current_time().replace(":","-")
+        output_name = f"{basename}.【{time_infor}】.{ext}"
+        return output_name
+    else:
+        return tmp
+
+
+# 创建输出文件夹
+def make_output_dir(origin_name:str) -> None:
+    global output_folder_name
+    output_folder_name = output_folder_name + origin_name
+    
+    if (not os.path.exists(output_folder_name)):
+        os.mkdir(output_folder_name)
+    elif len(os.listdir(output_folder_name)) != 0:#文件夹为空，就不创建新的了
+        #防止冲突
+        time_infor = current_time().replace(":","-")
+        output_folder_name = "".join([output_folder_name,"【",time_infor,"】"])
+        os.mkdir(output_folder_name)
+    
+    if folderlist:
+        os.chdir(output_folder_name)
+        for folder in folderlist:
+            # folderlist是按层级排序的，深度浅的排在前面，是由os.walk中的topdown参数控制的（这里是默认状态）
+            os.mkdir(folder)
+        os.chdir("..")
+    
+    #无返回值
+    return
+
+
+# 转移修改时间，因为是复制或者从两种动态照片里原样导出的
+def transfer_modify_time(f_input:Union[str , zipfile.ZipInfo], transfer_locate_path:str) -> None:
+    
+    if isinstance(f_input , str):
+        try:
+            # access_time是来凑数的，毕竟time的tuple必须要两个参数
+            # 【访问时间】设置为：【拷贝/原样导出】的文件的【创建时间】
+            access_time = os.path.getctime(transfer_locate_path)
+            modify_time = os.path.getmtime(f_input)
+            os.utime(transfer_locate_path , (access_time , modify_time))
+        except:
+            pass
+    
+    elif isinstance(f_input , zipfile.ZipInfo):
+        try:
+            access_time = os.path.getctime(transfer_locate_path)
+            modify_time = time.mktime(f_input.date_time + (0,0,-1))
+            os.utime(transfer_locate_path , (access_time , modify_time))
+        except:
+            pass
+    
+    # 无返回值
+    return
+
+# 尝试删除传入的文件或文件夹
+def try_remove(file:str) -> None:
+    if os.path.exists(file):
+        if os.path.isfile(file):
+            try:
+                os.remove(file)
+            except:
+                pass
+        elif os.path.isdir(file):
+            try:
+                shutil.rmtree(file)
+            except:
+                pass
+    # 无返回值
+    return
+
+
+# 给文件整理碎片，原理就是用预分配空间的方法拷贝个新的出来
+def defrag_process(input_file:str) -> None:
+    global defrag_error_list
+    
+    if runtime_defrag:
+        try:
+            output = f"{input_file}.tmp"
+            copy_file(input_file , output)
+        
+        except:
+            try_remove(output)
+            log(f"❌    【{input_file}】在整理碎片的【拷贝】过程中出错，碎片未被整理")
+            defrag_error_list.append(copy(input_file))
+        
+        else:
+            try_remove(input_file)
+            if os.path.exists(input_file):
+                log(f"❌    【{input_file}】在整理碎片过程中出错，原碎片文件无法删除")
+                log(f"⚠    已整理好碎片的文件为【{output}】")
+                defrag_error_list.append(copy(input_file))
+            else:
+                try:
+                    os.rename(output,input_file)
+                except:
+                    log(f"⚠    【{input_file}】在整理碎片过程中出错，已整理好碎片的文件无法重命名为原文件名")
+                    log(f"✏    请自行想办法将【{output}】的后缀“.tmp”去除")
+                    defrag_error_list.append(copy(output))
+    
+    # 无返回值
+    return
+
+
+
+# 检查文件系统类型是否支持硬链接，据此决定是否替换复制策略
+def check_fs(path:str) -> None:
+    global runtime_copy_method , runtime_defrag
+
+    fs_type , is_hdd = fs_dict.get(os.path.splitdrive(path)[0] , ["",""])
+    
+    # 配置此路径的复制策略
+    if fs_type in {"NTFS","ReFS"}:# 目前仅有NTFS和高版本的ReFS支持硬链接
+        runtime_copy_method = copy_method
+    else:
+        # 这里调整运行时的复制策略，可以防止产生一堆“降级为拷贝”这种提醒的文件
+        runtime_copy_method = 1
+        if copy_method == 2:
+            log("★ 文件系统类型不是NTFS或ReFS，不支持硬链接，已替换复制策略为【只用拷贝】")
+    
+    # 配置此路径的碎片整理策略
+    if defrag_after_exiftool == 0:
+        if is_hdd:
+            runtime_defrag = True
+        else:
+            runtime_defrag = False
+    elif defrag_after_exiftool == 1:
+        runtime_defrag = True
+    elif defrag_after_exiftool == 2:
+        runtime_defrag = False
+
+
+# 从属于“transfer_file()”，由“transfer_file()”以及调用它的其他函数捕捉错误
+def copy_file(input_locate_path:str, transfer_locate_path:str , mmap_f: Optional[my_custom_mmap] = None):
+    
+    # 覆盖，不然fsutil会报错，不能创建
+    if os.path.exists(transfer_locate_path):
+        try:
+            os.remove(transfer_locate_path)
+        except:
+            raise Exception(f"文件【{transfer_locate_path}】已存在且删除失败，无法预分配空间")
+    
+    if isinstance(mmap_f , my_custom_mmap) and (not mmap_f.closed):
+        if (ret := os.system(f"fsutil file createNew \"{transfer_locate_path}\" {mmap_f.size()} >nul")):
+            raise Exception(f"无法给【{transfer_locate_path}】预分配空间")
+        
+        mmap_f.seek(0 , os.SEEK_SET)
+        with open(transfer_locate_path , mode="br+" , buffering=0) as dst:
+            # 虽然不清楚windows内存映射的文件读到内存中的量（缓冲的大小）
+            # 但这总好过dst.write(mmap_f.read())，前面这个估计会又把内容全部复制一遍
+            while buf := mmap_f.read(copy_file_buffer_size):
+                dst.write(buf)
+    
+    else:
+        if (ret := os.system(f"fsutil file createNew \"{transfer_locate_path}\" {os.path.getsize(input_locate_path)} >nul")):
+            raise Exception(f"无法给【{transfer_locate_path}】预分配空间")
+        
+        with open(input_locate_path , mode="rb") as src , open(transfer_locate_path , mode="br+" , buffering=0) as dst:
+            while buf := src.read(copy_file_buffer_size):
+                dst.write(buf)
+    
+    # 无返回值
+    return
+        
+
+
+# 拷贝转移不需要处理的或者出错的文件
+def transfer_file(input_locate_path:str, transfer_locate_path:str, mmap_f: Optional[my_custom_mmap] = None) -> None:
+    global transfer_error_list , down_to_copy_list
+    try_remove(transfer_locate_path)
+    
+    if runtime_copy_method == 0:
+        try:
+            win32file.CreateHardLink(transfer_locate_path , input_locate_path)
+        
+        except:
+            try_remove(transfer_locate_path)# 删除可能输出的问题残留
+            log("⚠ 降级为拷贝")
+
+            try:
+                copy_file(input_locate_path , transfer_locate_path , mmap_f)
+            except:
+                try_remove(transfer_locate_path)# 删除可能输出的问题残留
+                log("❌ 拷贝失败")
+                transfer_error_list.append(copy(input_locate_path))
+            else:
+                transfer_modify_time(input_locate_path,transfer_locate_path)
+                log("✅ 拷贝成功")
+                down_to_copy_list.append(copy(input_locate_path))
+        
+        else:
+            log("✅ 硬链接成功")
+    
+    
+    elif runtime_copy_method == 1:
+        try:
+            copy_file(input_locate_path , transfer_locate_path , mmap_f)
+        except:
+            try_remove(transfer_locate_path)# 删除可能输出的问题残留
+            log("❌ 拷贝失败")
+            transfer_error_list.append(copy(input_locate_path))
+        else:
+            transfer_modify_time(input_locate_path,transfer_locate_path)
+            log("✅ 拷贝成功")
+    
+    
+    elif runtime_copy_method == 2:
+        try:
+            win32file.CreateHardLink(transfer_locate_path , input_locate_path)
+        except:
+            try_remove(transfer_locate_path)# 删除可能输出的问题残留
+            log("❌ 硬链接失败")
+            transfer_error_list.append(copy(input_locate_path))
+        else:
+            log("✅ 硬链接成功")
+    
+    
+    
+    #无返回值
+    return
+
+
+# cmd标题栏展示文字
+def show_title(string:str) -> None:
+    author = " -- By: 不谙世事的雨滴 【吾爱破解论坛】"
+    string = string.ljust(32," ")
+    os.system(f"title {string}{author}")
+    
+    #无返回值
+    return
+
+
+# 在标题栏展示进度
+def show_progress() -> None:
+    while in_progress:
+        text = "".join(
+            [
+                "【" , (   (f"{seq_num}／{seq_total}").rjust( 2*len(str(seq_total)) + 2 , " " )   ) , "】",
+                (f"{progress_completed}／{file_total}").rjust( 2*len(str(file_total)) + 2 , " " ),
+            ]
+        )
+        
+        show_title(text)
+        time.sleep(0.25-0.03)
+    
+    # 无返回值
+    return
+
+
+# 重置一些列表和变量
+def reset_collections() -> None:
+    global filelist , folderlist , error_list , excluded_list , transfer_error_list 
+    global down_to_copy_list , defrag_error_list
+    global progress_completed , file_total
+    global output_folder_name #, error_folder_name
+    
+    filelist.clear()
+    folderlist.clear()
+    
+    error_list.clear()
+    excluded_list.clear()
+    transfer_error_list.clear()
+    down_to_copy_list.clear()
+    defrag_error_list.clear()
+    
+    progress_completed = 0
+    file_total = 0
+    
+    output_folder_name = setted_output_prefix
+    #error_folder_name = setted_error_prefix
+    
+    #无返回值
+    return
+
+# 判断是否只有一帧，排除动画
+# .is_animated 在pillow里不是每种格式都支持的
+# 参见：https://pillow.readthedocs.io/en/stable/reference/Image.html#PIL.Image.Image.is_animated
+# .n_frame 也类似
+def has_only_one_frame(im:Image) -> bool:
+    if hasattr(im , "is_animated") and im.is_animated:
+        return False
+    else:
+        return True
+
+
+# 判断是否为raw文件，如果是的话返回句柄，反之返回None
+def try_get_raw(src:my_custom_mmap):
+    src.seek(0 , os.SEEK_SET)
+    try:
+        raw_structure = rawpy.imread(src)
+    except:
+        return None
+    else:
+        return raw_structure
+
+
+# 预分配磁盘空间的写入文件方式，能极大减少输出的文件碎片
+def pre_allocate_write_output_file(output_path:str , data:Union[io.BytesIO, zipfile.ZipExtFile, bytes, str] , encoding:Optional[str]="utf-8-sig") -> None:
+    
+    # 覆盖，不然fsutil会报错，不能创建
+    if os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+        except:
+            raise Exception(f"文件【{output_path}】已存在且删除失败，无法预分配空间")
+    
+    
+    
+    if isinstance(data , (io.BytesIO , zipfile.ZipExtFile)):
+        data.seek(0 , os.SEEK_END)
+        if (ret := os.system(f"fsutil file createNew \"{output_path}\" {data.tell()} >nul")):
+            raise Exception(f"无法给【{output_path}】预分配空间")
+        
+        data.seek(0 , os.SEEK_SET)
+        with open(output_path,mode="br+",buffering=0) as f:
+            # 一次性全部“f.write(data.getvalue())”的话，
+            # data在写入前估计又会被复制一次，虽然这个过程是短暂的
+            while buf := data.read(copy_file_buffer_size):
+                f.write(buf)
+        data.close() # 及时释放内存，多次close（包括退出with语句时的close）也没关系
+    
+    elif isinstance(data , bytes):
+        if (ret := os.system(f"fsutil file createNew \"{output_path}\" {len(data)} >nul")):
+            raise Exception(f"无法给【{output_path}】预分配空间")
+        
+        with open(output_path,mode="br+",buffering=0) as f:
+            f.write(data)
+    
+    elif isinstance(data , str):
+        data = "\r\n".join(data.splitlines()) # 换成CRLF
+        data = data.encode(encoding=encoding , errors="replace")
+        
+        if (ret := os.system(f"fsutil file createNew \"{output_path}\" {len(data)} >nul")):
+            raise Exception(f"无法给【{output_path}】预分配空间")
+        
+        with open(output_path,mode="br+",buffering=0) as f:
+            f.write(data)
+    
+    else:
+        raise Exception("第二个参数data类型错误")
+    
+    
+    # 无返回值
+    return
+
+
+def pic_save(output_path:str , preserve_exif: Optional[bool] = True , exif_rotate: Optional[bool] = True) -> None:
+    global im
+    
+    if exif_rotate:
+        # 处理exif旋转信息，详情：https://pillow.readthedocs.io/en/stable/reference/ImageOps.html#PIL.ImageOps.exif_transpose
+        # 看过官网的源码：https://pillow.readthedocs.io/en/stable/_modules/PIL/ImageOps.html#exif_transpose
+        # ，这一步处理中，原图片exif旋转信息会被清除，防止图片保存后因为exif旋转信息残留，导致方向错误
+        ImageOps.exif_transpose(im , in_place=True)
+    
+    # 如果最终转换为jpg、bmp，因为不支持透明层，所以要转换为RGB模式
+    if im.has_transparency_data and (target_format in {"JPEG","BMP"}):
+        im = im.convert('RGB')
+    
+    if preserve_exif:
+        with io.BytesIO() as tmp_io:
+            # 保存，参数帮助：https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg-saving
+            im.save(fp=tmp_io , format=target_format , quality=jpg_quality , subsampling=jpg_subsample_option , exif=im.getexif() )
+            pre_allocate_write_output_file(output_path , tmp_io)
+    else:
+        with io.BytesIO() as tmp_io:
+            # 保存，参数帮助：https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg-saving
+            im.save(fp=tmp_io , format=target_format , quality=jpg_quality , subsampling=jpg_subsample_option )
+            pre_allocate_write_output_file(output_path , tmp_io)
+    
+    # 无返回值
+    return
+
+
+# 日志合并，新的在前
+def concat_log() -> None:
+    
+    try:
+        with open(log_file , mode="rt" , encoding="utf-8-sig" , errors="replace" , newline="\r\n") as src_history:
+            history = src_history.read(10**9)# 保留10^9个字符
+    except:
+        history = ""
+    
+    
+    try:
+        with open(tmp_log_file , mode="rt" , encoding="utf-8-sig" , errors="replace" , newline="\r\n") as src_now:
+            now = src_now.read(10**9).rstrip("\x00") # 保留10^9个字符，清除预分配空间尾部未使用，一直是原样的“\x00”
+    except:
+        now = ""
+    
+    
+    try:
+        pre_allocate_write_output_file(log_file , (now + history) , encoding="utf-8-sig")
+    except Exception as e:
+        raise Exception(f"日志合并写入出错，详情：{e}")
+    else:
+        try_remove(tmp_log_file)
+    
+    # 无返回值
+    return
+
+
+# 猜测文件类型
+def get_type(f:Union[my_custom_mmap , zipfile.ZipExtFile]) -> str:
+    global wechat_xor_key 
+    global mp4_start_offset , mp4_end_offset , jpg_end_offset
+    global raw_structure
+    
+    try:
+        mimetype = filetype.guess_mime(f)
+    except:
+        mimetype = None
+    
+    # （1）EPS的mime检测出来就是"application/postscript"
+    #     "application/postscript"还有可能是非图片，要走最下面的匹配扩展的特征字典，
+    #     只有满足下面的条件，才是EPS图片
+    # （2）如果是jpg文件头的话，还要在下面判断一下是否是华为动态照片
+    # （3）raw格式图片需要统一走rawpy处理，很多raw格式图片文件的文件头都是基于tiff的
+    #      所以要先尝试检测raw，如果不行，再传回tiff的结果
+    if mimetype and (mimetype not in {"application/postscript" , "image/jpeg" , "image/tiff" , "image/x-canon-cr2"}):
+        return mimetype
+    
+    if (mimetype != "application/postscript"):
+        # 下面判断的格式都不可能在livp文件（zip文件）里，所以忽略zipfile打开的文件句柄
+        # 如果已经出"application/postscript"的结果了，跳过这里走下面的，加快点速度
+        # "image/tiff" , "image/x-canon-cr2"同理
+        if isinstance(f , my_custom_mmap):
+            
+            if not mimetype:
+                
+                # 判断是否为SVG格式，尺寸可能很小，最小文件大小不作限制
+                if (  (f.find(b"<svg") != -1) and (f.rfind(b"</svg") != -1)  ) \
+                or (  (f.find(b"<\x00s\x00v\x00g") != -1) and (f.rfind(b"<\x00/\x00s\x00v\x00g") != -1)  ) : # 可能存在的 UTF-16 编码
+                    return (mimetype := "special/svg")
+                
+                
+                # 判断是否为微信dat加密图片
+                if f.size() > 128:
+                    key_set = set()
+                    for seek_point , compare_target , ext in wechat_xor_decode_guess_tuple:
+                        # 每次循环都要清除，毕竟每次比对的样板不同
+                        # 不能因为上一次比对的结果残留，影响下一轮的比对
+                        key_set.clear()
+                        
+                        offset , ref = seek_point
+                        try:
+                            f.seek(offset , ref)
+                        except:
+                            continue
+                        
+                        # zip会适应最短的字符串，其余多余的全部会舍去，
+                        # 这里固定从源文件读取32个字节，应该够特征compare_target的字节长度了，
+                        # 包括以后可能新增进wechat_xor_decode_guess_tuple的特征的字节长度
+                        for src , cmp in zip(f.read(32) , compare_target):
+                            # 整个过程看起来如下图：
+                            #
+                            # 从源文件读取指定位置指定长度的字节串:     [0x12] [0x55] [0xff] [0x11] …… [0x23]   ||   [0xCD] [0xAD] …… （从源文件多读，被“zip()”舍去的字节）
+                            # 　　　　　　　　　　　　　　⇩
+                            #     　　　　　　　　　　　异或　　　　　　　 ^      ^      ^      ^   ……    ^
+                            # 　　　　　　　　　　　　　　⇩
+                            # 　自建图片特征列表里用来比对的字节串:     [0x00] [0x45] [0x79] [0x18] …… [0x24]
+                            # 　　　　　　　　　　　　　　||　　　　　　　 =      =      =      =         =
+                            # 　　　　　　　　　　　　　异或的结果:     [0x12] [0x10] [0x86] [0x09] …… [0x07] 
+                            #
+                            #     注：zip()打包好后，每组的[0x..]由字节转换为整数，所以才能进行异或运算
+                            #
+                            #     -->> 取按照排列顺序异或每一位的【异或的结果】，到不重复的集合【key_set】
+                            #
+                            key_set.add(src ^ cmp)
+                        
+                        # 如果满足有且仅有唯一的异或结果（没有异或结果的情况应该是read()读不到数据），
+                        # 这个结果即为异或解密密钥，
+                        # 代表dat大概率解密成功，大概率确定为微信dat异或加密图片
+                        if len(key_set) == 1:
+                            # 除了传出解密密钥方便后续解密外，也传出真实的扩展名“ext”方便输出文件
+                            wechat_xor_key = ((list(key_set))[0]  ,  ext)
+                            return (mimetype := "special/wechat_dat")
+                        #else:
+                            #continue
+                
+                
+                # 尝试检测raw格式，同样最小大小不作限制
+                if (raw_structure := try_get_raw(f)):
+                    return (mimetype := "special/raw")
+            
+            
+            # 判断是否为华为动态照片
+            elif (mimetype == "image/jpeg") and f.size() > 128:
+                mp4_start_offset = None
+                mp4_end_offset = None
+                jpg_end_offset = None
+                
+                f.seek(-40,os.SEEK_END)
+                finder = f.tell()
+                readed_bytes = f.read(40)
+                f.seek(0)
+                
+                if ( not readed_bytes.endswith(b"\xFF\xD9") ) \
+                and ( re.match("^[\d]+[:][\d]+[ ]+LIVE_[\d]+[ ]+$" , readed_bytes.decode(encoding='cp437',errors='replace') , re.I) ):
+                    mp4_end_offset = copy(finder)
+                    
+                    if (finder := f.find(b"ctrace\x00\x00")) != -1 :
+                        jpg_search_end = copy(finder)
+                        mp4_start_offset = copy(finder) + 8
+                        
+                        if ( finder := f.rfind( (b"\xFF\xD9" + b"\x00"*8*5) , 0 , jpg_search_end  )) != -1 :
+                            jpg_end_offset = copy(finder) + 2
+                
+                if jpg_end_offset and mp4_start_offset and mp4_end_offset:
+                    return (mimetype := "special/hwlp")
+                else:
+                    return mimetype # 此时mimetype为"image/jpeg"
+            
+            
+            # 判断是否为基于tiff的RAW，
+            # 或者如果是CR2，替换CR2的mime为"special/raw"
+            elif mimetype in {"image/tiff" , "image/x-canon-cr2"}:
+                
+                if (raw_structure := try_get_raw(f)):
+                    return (mimetype := "special/raw")
+                # 如果无法检测出RAW，可能是真的tiff
+                elif mimetype == "image/tiff":
+                    return mimetype
+                # rawpy是支持CR2的，如果没识别出来，说明应该出问题了
+                elif mimetype == "image/x-canon-cr2":
+                    return (mimetype := "")
+        
+        # 如果是zip文件里的，就不走上面的代码
+        # 华为动态图片应该不会在livp里
+        elif isinstance(f , zipfile.ZipExtFile) and (mimetype == "image/jpeg"):
+            return mimetype
+    
+    
+    
+    # 如果上面没给出结果并返回，或者为"application/postscript"，
+    # 尝试匹配扩展的特征字典
+    for k,v in ex_File_Signatures_dict.items():
+        seek_point , compare_target = v
+        offset , ref = seek_point
+        try:
+            f.seek(offset , ref)
+        except:
+            continue
+        
+        if f.read(len(compare_target)) == compare_target:
+            return (mimetype := k)
+    
+    # 上面只要有结果，就被立马return掉了，能到这边的就是没有结果的
+    # 为了防止出现 "image/" in None 报错，替换为空字符串
+    return (mimetype := "")
+
+
+# 检查进程是否唯一
+def has_one_more_process() -> bool:
+    instance_num = 0
+    for proc in psutil.process_iter():
+        if proc.name() in {"any_pic_2_jpg.exe","any_pic_2_png.exe"}:
+            instance_num += 1
+        if instance_num > 1:
+            return True
+    return False
+
+# wmi检测物理磁盘类型，wmi库的速度很慢，要分离出单独的线程，在程序一开始就运行
+def wmi_check_physical_disk() -> None:
+    global pd_dict
+    
+    # 不在线程中这么做会报错
+    pythoncom.CoInitialize()
+    
+    for physical_disk in wmi.WMI().Win32_DiskDrive():
+        try:
+            if pySMART.Device(f'/dev/pd{physical_disk.Index}').rotation_rate :
+                is_hdd = True
+            else:
+                is_hdd = False
+        except:
+            is_hdd = False
+        
+        for partition in physical_disk.associators("Win32_DiskDriveToDiskPartition"):
+            for logical_disk in partition.associators("Win32_LogicalDiskToPartition"):
+                partition_letter = getattr(logical_disk,"DeviceID","")
+                pd_dict[copy(partition_letter)] = copy(is_hdd)
+    
+    # 与“pythoncom.CoInitialize()”相对应
+    pythoncom.CoUninitialize()
+    
+    return
+
+
+# 处理关键错误
+def handle_critical_error(err_str:str , log_handle_present:Optional[bool]=True) -> None:
+    # 在终端、日志里输出错误信息
+    if log_handle_present:
+        log(f"\n\n{err_str}")
+    else:
+        print(f"\n\n{err_str}")
+    
+    # 如果设置没有关，调用windows的API弹出错误窗口（有声音且醒目）
+    if pop_window_main_switch and show_critical_error_window:
+        # 单个确认按钮，错误❌图标，弹窗置顶，设置为前台的弹窗
+        win32api.MessageBox(0 , err_str , app_exe , (win32con.MB_OK | win32con.MB_ICONERROR | win32con.MB_TOPMOST | win32con.MB_SETFOREGROUND) )
+    
+    if log_handle_present:
+        global log_handle
+        
+        try:
+            log("\n\n==========     【已退出】     ==========\n\n＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝"+"\n"*15)
+        except:
+            pass
+        
+        try:
+            log_handle.close()
+        except:
+            pass
+        try:
+            concat_log()
+        except:
+            pass
+    
+    else:
+        print("\n\n==========     【已退出】     ==========\n\n")
+    
+
+    sys.exit(0)
+
+
+
+# 处理无路径传入
+def handle_no_path_in() -> None:
+    global log_handle
+    
+    log("\n\n无路径传入")
+    later_start_notepad = False
+    
+    if target_format=="JPEG":
+        
+        if pop_window_main_switch and to_jpg_exe_no_path_parameter_behavior:
+            
+            if to_jpg_exe_no_path_parameter_behavior == 1:
+                # 1：弹窗提示后，打开配置文件 ⇨ 【配置.ini】供修改编辑。
+                # 单个确认按钮，警告⚠图标，弹窗置顶，设置为前台的弹窗
+                log("\n\n★ 【弹窗提示 + 打开配置文件】")
+                win32api.MessageBox(0 , "无路径传入，即将根据设置，\n打开配置文件 ⇨ 【配置.ini】 供修改编辑" , app_exe , (win32con.MB_OK | win32con.MB_ICONWARNING | win32con.MB_TOPMOST | win32con.MB_SETFOREGROUND))
+                if os.path.exists(config_file):
+                    os.system(f"start \"title\" notepad \"{config_file}\"")
+            elif to_jpg_exe_no_path_parameter_behavior == 2:
+                # 2：不弹窗，直接打开配置文件 ⇨ 【配置.ini】供修改编辑。
+                log("\n\n★ 【直接打开配置文件】")
+                if os.path.exists(config_file):
+                    os.system(f"start \"title\" notepad \"{config_file}\"")
+            elif to_jpg_exe_no_path_parameter_behavior == 3:
+                # 3：弹窗提示后，打开运行日志 ⇨ 【运行日志.log】供查看。
+                # 单个确认按钮，警告⚠图标，弹窗置顶，设置为前台的弹窗
+                log("\n\n★ 【弹窗提示 + 打开运行日志（如果有的话）】")
+                win32api.MessageBox(0 , "无路径传入，即将根据设置，\n打开运行日志 ⇨ 【运行日志.log】 供查看" , app_exe , (win32con.MB_OK | win32con.MB_ICONWARNING | win32con.MB_TOPMOST | win32con.MB_SETFOREGROUND))
+                later_start_notepad = True
+            elif to_jpg_exe_no_path_parameter_behavior == 4:
+                # 4：不弹窗，直接打开运行日志 ⇨ 【运行日志.log】供查看。
+                log("\n\n★ 【直接打开运行日志（如果有的话）】")
+                later_start_notepad = True
+            elif to_jpg_exe_no_path_parameter_behavior == 5:
+                # 5：弹窗提示后，打开【软件所在目录】。
+                log("\n\n★ 【弹窗提示 + 打开软件所在目录】")
+                win32api.MessageBox(0 , "无路径传入，即将根据设置，\n打开【软件所在目录】" , app_exe , (win32con.MB_OK | win32con.MB_ICONWARNING | win32con.MB_TOPMOST | win32con.MB_SETFOREGROUND))
+                os.system(f"start \"title\" explorer \"{program_dir}\\..\"")
+            elif to_jpg_exe_no_path_parameter_behavior == 6:
+                # 6：不弹窗，直接打开【软件所在目录】。
+                log("\n\n★ 【直接打开软件所在目录】")
+                os.system(f"start \"title\" explorer \"{program_dir}\\..\"")
+            elif to_jpg_exe_no_path_parameter_behavior == 7:
+                # 7：仅弹窗提醒，但不打开配置文件【配置.ini】、【运行日志.log】和【软件所在目录】其中任何一个。
+                # 单个确认按钮，警告⚠图标，弹窗置顶，设置为前台的弹窗
+                log("\n\n★ 【仅弹窗提示】")
+                win32api.MessageBox(0 , "无路径传入，根据设置，\n接下来，配置文件、运行日志，\n以及软件所在目录，都不会被打开" , app_exe , (win32con.MB_OK | win32con.MB_ICONWARNING | win32con.MB_TOPMOST | win32con.MB_SETFOREGROUND))
+
+    elif target_format=="PNG":
+        
+        if pop_window_main_switch and to_png_exe_no_path_parameter_behavior:
+            
+            if to_png_exe_no_path_parameter_behavior == 1:
+                # 1：弹窗提示后，打开配置文件 ⇨ 【配置.ini】供修改编辑。
+                # 单个确认按钮，警告⚠图标，弹窗置顶，设置为前台的弹窗
+                log("\n\n★ 【弹窗提示 + 打开配置文件】")
+                win32api.MessageBox(0 , "无路径传入，即将根据设置，\n打开配置文件 ⇨ 【配置.ini】 供修改编辑" , app_exe , (win32con.MB_OK | win32con.MB_ICONWARNING | win32con.MB_TOPMOST | win32con.MB_SETFOREGROUND))
+                if os.path.exists(config_file):
+                    os.system(f"start \"title\" notepad \"{config_file}\"")
+            elif to_png_exe_no_path_parameter_behavior == 2:
+                # 2：不弹窗，直接打开配置文件 ⇨ 【配置.ini】供修改编辑。
+                log("\n\n★ 【直接打开配置文件】")
+                if os.path.exists(config_file):
+                    os.system(f"start \"title\" notepad \"{config_file}\"")
+            elif to_png_exe_no_path_parameter_behavior == 3:
+                # 3：弹窗提示后，打开运行日志 ⇨ 【运行日志.log】供查看。
+                # 单个确认按钮，警告⚠图标，弹窗置顶，设置为前台的弹窗
+                log("\n\n★ 【弹窗提示 + 打开运行日志（如果有的话）】")
+                win32api.MessageBox(0 , "无路径传入，即将根据设置，\n打开运行日志 ⇨ 【运行日志.log】 供查看" , app_exe , (win32con.MB_OK | win32con.MB_ICONWARNING | win32con.MB_TOPMOST | win32con.MB_SETFOREGROUND))
+                later_start_notepad = True
+            elif to_png_exe_no_path_parameter_behavior == 4:
+                # 4：不弹窗，直接打开运行日志 ⇨ 【运行日志.log】供查看。
+                log("\n\n★ 【直接打开运行日志（如果有的话）】")
+                later_start_notepad = True
+            elif to_png_exe_no_path_parameter_behavior == 5:
+                # 5：弹窗提示后，打开【软件所在目录】。
+                log("\n\n★ 【弹窗提示 + 打开软件所在目录】")
+                win32api.MessageBox(0 , "无路径传入，即将根据设置，\n打开【软件所在目录】" , app_exe , (win32con.MB_OK | win32con.MB_ICONWARNING | win32con.MB_TOPMOST | win32con.MB_SETFOREGROUND))
+                os.system(f"start \"title\" explorer \"{program_dir}\\..\"")
+            elif to_png_exe_no_path_parameter_behavior == 6:
+                # 6：不弹窗，直接打开【软件所在目录】。
+                log("\n\n★ 【直接打开软件所在目录】")
+                os.system(f"start \"title\" explorer \"{program_dir}\\..\"")
+            elif to_png_exe_no_path_parameter_behavior == 7:
+                # 7：仅弹窗提醒，但不打开配置文件【配置.ini】、【运行日志.log】和【软件所在目录】其中任何一个。
+                # 单个确认按钮，警告⚠图标，弹窗置顶，设置为前台的弹窗
+                log("\n\n★ 【仅弹窗提示】")
+                win32api.MessageBox(0 , "无路径传入，根据设置，\n接下来，配置文件、运行日志，\n以及软件所在目录，都不会被打开" , app_exe , (win32con.MB_OK | win32con.MB_ICONWARNING | win32con.MB_TOPMOST | win32con.MB_SETFOREGROUND))
+    
+    try:
+        log("\n\n==========     【已退出】     ==========\n\n＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝"+"\n"*15)
+    except:
+        pass
+    
+    try:
+        log_handle.close()
+    except:
+        pass
+    try:
+        concat_log()
+    except:
+        pass
+    
+    # 等程序操作完运行日志文件再打开
+    if later_start_notepad:
+        if os.path.exists(log_file):
+            os.system(f"start \"title\" notepad \"{log_file}\"")
+    
+
+    sys.exit(0)
+
+
+# 结束弹窗
+def close_up() -> None:
+    
+    if pop_window_main_switch and show_finish_window:
+        win32api.MessageBeep(win32con.MB_ICONINFORMATION)
+        ret = pyautogui.confirm(text="处理完毕" , title=app_exe , buttons=close_window_button_list)
+        if ret == "查看运行日志":
+            if os.path.exists(log_file):
+                os.system(f"start \"title\" notepad \"{log_file}\"")
+        elif ret == "给作者加个鸡腿":
+            show_sponsor_info()
+    
+    # 无返回值
+    return
+
+
+
+
+# # # # # # # # # # # # # # # 初始化变量 # # # # # # # # # # # # # # #
+
+
+#输出【文件/文件夹】名称的前缀
+output_folder_name = setted_output_prefix
+#error_folder_name = setted_error_prefix
+
+#存放单个路径下，文件、文件夹的列表
+filelist = []
+folderlist = []
+
+#存放处理进度
+seq_num = 0
+seq_total = len(args)
+progress_completed = 0
+file_total = 0
+
+#是否还在进行中，给显示进度的线程判断结束条件使用
+in_progress = True
+#故障文件列表
+error_list = []
+#排除文件列表
+excluded_list = []
+#转移时出错的文件列表
+transfer_error_list = []
+#转移时降级为拷贝后成功拷贝的文件列表
+down_to_copy_list = []
+#整理碎片时失败的文件
+defrag_error_list = []
+#用于给pdf中图片去重的crc集合
+crc32_set = set()
+
+# 存放文件系统和磁盘类型
+fs_dict = dict()
+pd_dict = dict()
+
+# 尝试从系统环境变量中读取【弹窗总开关】和【打开关键错误弹窗】的设置
+pop_window_main_switch_got_os_environ = False
+show_critical_error_window_got_os_environ = False
+for k,v in os.environ.items():
+    if (tmp := k.lower()) == "any_pic_2_pop_window_main_switch":
+        if (tmp := v.lower()) in {'1', 'yes', 'true', 'on'}:
+            pop_window_main_switch = True
+            pop_window_main_switch_got_os_environ = True
+        elif tmp in {'0', 'no', 'false', 'off'}:
+            pop_window_main_switch = False
+            pop_window_main_switch_got_os_environ = True
+    elif tmp == "any_pic_2_show_critical_error_window":
+        if (tmp := v.lower()) in {'1', 'yes', 'true', 'on'}:
+            show_critical_error_window = True
+            show_critical_error_window_got_os_environ = True
+        elif tmp in {'0', 'no', 'false', 'off'}:
+            show_critical_error_window = False
+            show_critical_error_window_got_os_environ = True
+
+# # # # # # # # # # # # # # # 初始化变量 # # # # # # # # # # # # # # #
+
+
+
+'''
+        ........       .......                    .....                                                       
+        =@@@@@@@.     ,@@@@@@@                    =@@@@                                                       
+        =@@@@@@@^     /@@@@@@@                    =@@@@                                                       
+        =@@@@@@@@.   =@@@@@@@@      .]]]]]]`              .]]]`  ,]]]].                                       
+        =@@@@=@@@^   @@@@=@@@@    /@@@@@@@@@@@.   =@@@@   =@@@@/@@@@@@@@`                                     
+        =@@@@.@@@@. =@@@^=@@@@   /@@@/` .,@@@@^   =@@@@   =@@@@@/. ,@@@@@.                                    
+        =@@@@.=@@@\ @@@@.=@@@@          ,]/@@@@   =@@@@   =@@@@^    =@@@@.         ,]]]]]]]]]]]]]]]]]]]`      
+        =@@@@. @@@@/@@@^ =@@@@    ,@@@@@@@@@@@@   =@@@@   =@@@@.    =@@@@.         \@@@@@@@@@@@@@@@@@@@@.     
+        =@@@@. =@@@@@@@. =@@@@  .@@@@@/[`.=@@@/   =@@@@   =@@@@.    =@@@@.                           =@@^     
+        =@@@@.  @@@@@@^  =@@@@  =@@@@`   ,@@@@\   =@@@@   =@@@@.    =@@@@.                           =@@^     
+        =@@@@.  =@@@@@.  =@@@@   \@@@@@@@@@@@@@   =@@@@   =@@@@.    =@@@@.                        @@@@@@@@@@  
+        ,@@@@.   @@@@/   =@@@@    ,\@@@@[` \@@@^  =@@@O   ,@@@@.    ,@@@@.                        ,@@@@@@@@`  
+                                                                                                   =@@@@@@^   
+                                                                                                    @@@@@@    
+                                                                                                    .@@@@^    
+                                                                                                     =@@/     
+                                                                                                      \@.     
+                                                                                                       `      
+'''
+
+# 检查重复进程
+if has_one_more_process():
+    handle_critical_error("程序仅允许同一时间有一个进程存在，程序终止" , log_handle_present=False)
+
+
+try:
+    # 上次运行可能因为出错产生的残留临时日志文件
+    if os.path.exists(tmp_log_file):
+        concat_log()
+except Exception as e:
+    handle_critical_error(f"无法合并上次运行残留的临时日志文件，\n详情：{e}，程序终止" , log_handle_present=False)
+
+
+try:
+    # 预先分配空间给临时日志文件，最后会剪断
+    if (ret := os.system(f"fsutil file createNew \"{tmp_log_file}\" {log_file_allocate_size} >nul")):
+        raise Exception("无法为临时日志文件预分配空间")
+    
+    log_handle = open(tmp_log_file , mode="tr+" , encoding="utf-8-sig" , newline="\r\n" , buffering=1) # CRLF，行缓冲，遇到换行符就flush
+
+except Exception as e:
+    handle_critical_error(f"\n\n无法创建日志文件，\n详情：{e}，程序终止" , log_handle_present=False)
+
+
+with log_handle:
+    
+    try:
+        # 日志文件头
+        log(f"＝＝＝＝＝＝＝＝＝＝＝　▶　{str(datetime.datetime.now())}　◀　＝＝＝＝＝＝＝＝＝＝＝\n")
+        
+        # 启动wmi检测物理磁盘类型的线程，wmi库的速度很慢，
+        # 要分离出单独的线程，在程序一开始就运行
+        t = threading.Thread(target=wmi_check_physical_disk)
+        t.setDaemon(True)
+        t.start()
+        
+        # 检查配置文件是否存在，是否要重置（空文件）
+        # 准备好配置文件，方便下面直接双击编辑（无路径传入的处理）
+        if not os.path.exists(config_file):
+            try:
+                pre_allocate_write_output_file(config_file , default_config_content , encoding="utf-8-sig")
+            except Exception as e:
+                handle_critical_error(f"配置文件不存在，且无法写出默认配置文件，\n详情：{e}，\n程序终止")
+        
+        elif os.path.getsize(config_file) < 32: # 空文件，重置
+            try:
+                pre_allocate_write_output_file(config_file , default_config_content , encoding="utf-8-sig")
+            except Exception as e:
+                handle_critical_error(f"无法重置空配置文件，\n详情：{e}，\n程序终止")
+        
+        
+        show_title("读取配置文件中...")
+        # 读取和解析配置文件
+        try:
+            cfg = configparser.ConfigParser()
+            with open(config_file ,mode="rt", encoding="utf-8-sig" , newline="\r\n") as f:
+                cfg.read_file(f)
+            
+            
+            ## [window_pop_behavior]
+            # 1.【弹窗总开关】（系统变量优先）
+            if not pop_window_main_switch_got_os_environ:
+                try:
+                    tmp = cfg.getboolean(section="window_pop_behavior" , option="pop_window_main_switch")
+                except:
+                    pass
+                else:
+                    pop_window_main_switch = copy(tmp)
+            
+            # 2.【单纯双击启动程序“any_pic_2_jpg.exe” / “to_jpg.bat”，
+            #    没有路径传入时，此程序对应的表现】
+            try:
+                tmp = cfg.getint(section="window_pop_behavior" , option="to_jpg_exe_no_path_parameter_behavior")
+            except:
+                pass
+            else:
+                if tmp in range(0,8):
+                    to_jpg_exe_no_path_parameter_behavior = copy(tmp)
+            
+            # 3.【单纯双击启动程序“any_pic_2_png.exe” / “to_png.bat”，
+            #    没有路径传入时，此程序对应的表现】
+            try:
+                tmp = cfg.getint(section="window_pop_behavior" , option="to_png_exe_no_path_parameter_behavior")
+            except:
+                pass
+            else:
+                if tmp in range(0,8):
+                    to_png_exe_no_path_parameter_behavior = copy(tmp)
+            
+            # 4.【打开处理完毕时的弹窗】
+            try:
+                tmp = cfg.getboolean(section="window_pop_behavior" , option="show_finish_window")
+            except:
+                pass
+            else:
+                show_finish_window = copy(tmp)
+            
+            # 5.【打开关键错误弹窗】（系统变量优先）
+            if not show_critical_error_window_got_os_environ:
+                try:
+                    tmp = cfg.getboolean(section="window_pop_behavior" , option="show_critical_error_window")
+                except:
+                    pass
+                else:
+                    show_critical_error_window = copy(tmp)
+            
+            
+            ## [transfer]
+            # 6.【复制策略】
+            try:
+                tmp = cfg.getint(section="transfer" , option="copy_method")
+            except:
+                pass
+            else:
+                if tmp in range(0,3):
+                    copy_method = copy(tmp)
+            
+            
+            ## [quality]
+            # 7.【输出的jpg图片质量】
+            try:
+                tmp = cfg.getint(section="quality" , option="jpg_quality")
+            except:
+                pass
+            else:
+                if tmp in range(1,101):
+                    jpg_quality = copy(tmp)
+            
+            # 8.【jpg子采样选项】
+            try:
+                tmp = cfg.getint(section="quality" , option="jpg_subsample_option")
+            except:
+                pass
+            else:
+                if tmp in range(0,3):
+                    jpg_subsample_option = copy(tmp)
+            
+            # 9.【png无损压缩（zip）的等级】
+            try:
+                tmp = cfg.getint(section="quality" , option="png_compress_level")
+            except:
+                pass
+            else:
+                if tmp in range(0,10):
+                    png_compress_level = copy(tmp)
+            
+            
+            ## [format]
+            # 10.【用户自定义排除的格式】
+            try:
+                tmp = cfg.get(section="format" , option="user_defined_excluded_format_set")
+            except:
+                pass
+            else:
+                tmp = {i.upper() for i in re.split(r"[\s]*[,|，|、|/|\\|\|]+[\s]*",tmp) if i.upper() in supported_format_set}
+                user_defined_excluded_format_set = copy(tmp)
+            
+            # 11.【排除已经是目标格式的文件】
+            try:
+                tmp = cfg.getboolean(section="format" , option="exclude_target_format")
+            except:
+                pass
+            else:
+                exclude_target_format = copy(tmp)
+            
+            # 12.【是否转换RAW图片】
+            try:
+                tmp = cfg.getboolean(section="format" , option="convert_raw")
+            except:
+                pass
+            else:
+                convert_raw = copy(tmp)
+            
+            # 13.【是否转换苹果LIVP动态照片】
+            try:
+                tmp = cfg.getboolean(section="format" , option="convert_livp")
+            except:
+                pass
+            else:
+                convert_livp = copy(tmp)
+            
+            # 14.【苹果LIVP动态照片直接输出，不转换】
+            try:
+                tmp = cfg.getboolean(section="format" , option="livp_direct_output")
+            except:
+                pass
+            else:
+                livp_direct_output = copy(tmp)
+            
+            # 15.【是否转换华为动态照片】
+            try:
+                tmp = cfg.getboolean(section="format" , option="convert_hwlp")
+            except:
+                pass
+            else:
+                convert_hwlp = copy(tmp)
+            
+            # 16.【华为动态照片直接输出，不转换】
+            try:
+                tmp = cfg.getboolean(section="format" , option="hwlp_direct_output")
+            except:
+                pass
+            else:
+                hwlp_direct_output = copy(tmp)
+            
+            # 17.【是否转换PDF】
+            try:
+                tmp = cfg.getboolean(section="format" , option="convert_pdf")
+            except:
+                pass
+            else:
+                convert_pdf = copy(tmp)
+            
+            # 18.【PDF转换模式】
+            try:
+                tmp = cfg.getint(section="format" , option="pdf_mode")
+            except:
+                pass
+            else:
+                if tmp in range(0,3):
+                    pdf_mode = copy(tmp)
+            
+            # 19.【PDF内嵌图片直接输出，不转换】
+            try:
+                tmp = cfg.getboolean(section="format" , option="pdf_inside_pic_direct_output")
+            except:
+                pass
+            else:
+                pdf_inside_pic_direct_output = copy(tmp)
+            
+            # 20.【PDF页面渲染图缩放比例】
+            try:
+                tmp = cfg.getfloat(section="format" , option="pdf_page_render_zoom_ratio")
+            except:
+                pass
+            else:
+                if tmp > 0:
+                    pdf_page_render_zoom_ratio = copy(tmp)
+            
+            # 21.【是否转换SVG】
+            try:
+                tmp = cfg.getboolean(section="format" , option="convert_svg")
+            except:
+                pass
+            else:
+                convert_svg = copy(tmp)
+            
+            # 22.【SVG转换后直接输出PNG】
+            try:
+                tmp = cfg.getboolean(section="format" , option="svg_direct_output_png")
+            except:
+                pass
+            else:
+                svg_direct_output_png = copy(tmp)
+            
+            # 23.【是否转换微信加密的dat图片】
+            try:
+                tmp = cfg.getboolean(section="format" , option="convert_wechat_dat")
+            except:
+                pass
+            else:
+                convert_wechat_dat = copy(tmp)
+            
+            # 24.【微信dat图片解密后直接输出，不转换】
+            try:
+                tmp = cfg.getboolean(section="format" , option="wechat_dat_direct_output")
+            except:
+                pass
+            else:
+                wechat_dat_direct_output = copy(tmp)
+            
+            
+            ## [exif]
+            # 25.【转换时是否保留RAW图片的exif】
+            try:
+                tmp = cfg.getboolean(section="exif" , option="perserve_raw_pic_exif")
+            except:
+                pass
+            else:
+                perserve_raw_pic_exif = copy(tmp)
+            
+            # 26.【转换时是否保留普通图片的exif】
+            try:
+                tmp = cfg.getboolean(section="exif" , option="perserve_common_pic_exif")
+            except:
+                pass
+            else:
+                perserve_common_pic_exif = copy(tmp)
+            
+            # 27.【转换时是否使用exiftool额外增强保存一次exif】
+            try:
+                tmp = cfg.getboolean(section="exif" , option="exif_enhance")
+            except:
+                pass
+            else:
+                exif_enhance = copy(tmp)
+            
+            # 28.【调用exiftool后，是否整理覆写产生的磁盘碎片】
+            try:
+                tmp = cfg.getint(section="exif" , option="defrag_after_exiftool")
+            except:
+                pass
+            else:
+                if tmp in range(0,3):
+                    defrag_after_exiftool = copy(tmp)
+            
+            
+            ## [buffer]
+            # 29.【拷贝文件的内存缓冲区大小】MiB
+            try:
+                tmp = cfg.getint(section="buffer" , option="copy_file_buffer_size")
+            except:
+                pass
+            else:
+                if tmp > 0:
+                    # 不大于可用内存的1/4
+                    copy_file_buffer_size = min( tmp*1024**2 , (psutil.virtual_memory().available)//4 )
+            
+            # 30.【给临时日志文件预分配的空间】MiB
+            try:
+                tmp = cfg.getint(section="buffer" , option="log_file_allocate_size")
+            except:
+                pass
+            else:
+                if tmp > 0:
+                    log_file_allocate_size = min(tmp*1024**2 , 4*10**9) # 10**9个字符限制，每个字符4字节计算
+        
+        except:
+            # 出错时，如遇到乱七八糟的字符“%()”啥的，尝试覆盖
+            try:
+                try:
+                    del cfg #释放些内存
+                except:
+                    pass
+                pre_allocate_write_output_file(config_file , default_config_content , encoding="utf-8-sig")
+            except:
+                handle_critical_error("解析配置文件遇到重大错误，\n尝试覆盖配置文件，却失败，\n程序终止")
+        else:
+            del cfg #释放些内存
+        
+        
+        log(
+            "\n".join([
+                f"【弹窗总开关】：{pop_window_main_switch}",
+                f"【打开关键错误弹窗】：{show_critical_error_window}        ||       【打开处理完毕时的弹窗】：{show_finish_window}",
+                f"【单纯双击启动程序“any_pic_2_jpg.exe” / “to_jpg.bat” 的表现模式】：{to_jpg_exe_no_path_parameter_behavior}",
+                f"【单纯双击启动程序“any_pic_2_png.exe” / “to_png.bat” 的表现模式】：{to_png_exe_no_path_parameter_behavior}",
+                "\n\n",
+            ])
+        )
+        
+        
+        # 判断有无路径传入
+        if not args:
+            show_title("无路径传入")
+            handle_no_path_in()
+        
+        
+        show_title("获取信息并配置中...")
+        
+        # 如果不是以分隔符结尾，要补上分隔符“;”，
+        # 在刚刚装好的win7虚拟机上吃了一亏，然后补上的
+        if not (os.environ['PATH']).endswith(";"):
+            os.environ['PATH'] += ";"
+        # 添加当前路径到临时环境变量，方便运行exiftool还有pySMART的依赖smartctl
+        os.environ['PATH'] += f"{program_dir}\\ExifTool\\;"
+        os.environ['PATH'] += f"{program_dir}\\SmartMonTools\\;"
+        
+        
+        
+        if (ret := os.system("exiftool -ver >nul 2>nul")):
+            handle_critical_error("找不到程序组件【ExifTool】，程序终止")
+        
+        if (ret := os.system("smartctl --version >nul 2>nul")):
+            handle_critical_error("找不到程序组件【smartctl】，程序终止")
+        
+        
+        
+        # 配置运行时排除的格式
+        if exclude_target_format:
+            runtime_excluded_format_set = user_defined_excluded_format_set | {copy(target_format)}
+        else:
+            runtime_excluded_format_set = copy(user_defined_excluded_format_set)
+        
+        
+        # 获取分区（包括网络磁盘、虚拟挂载磁盘）的文件系统信息，为后面的硬链接功能的条件判断做准备
+        for partition in psutil.disk_partitions(all=True):
+            fs_dict[getattr(partition,"mountpoint","").rstrip("\\")] = [getattr(partition,"fstype","") , False]
+        
+        # 等待wmi检测物理磁盘类型的线程完成，然后将是否为机械硬盘的信息写入psutil获得的fs_dict
+        t.join(timeout=33)
+        if t.isAlive():
+            raise Exception("WMI检测物理磁盘类型的线程超时了，超过了33秒")
+        
+        for k,v in pd_dict.items():
+            if k in fs_dict:
+                fs_dict[k][-1] = v
+        
+        
+        os.system("cls")
+        # 启动进度展示线程
+        t = threading.Thread(target=show_progress)
+        t.setDaemon(True)
+        t.start()
+        
+        # 日志记录头
+        log(
+            
+            "\n".join([
+                
+                "程序识别出的参考信息　　⇩　⇩\n",
+                "格式：盘符 --> [分区文件系统, 是否为机械硬盘]",
+                "-----------------------------------------",
+                "\n".join([f"{k} --> {v}" for k,v in fs_dict.items()]),
+                "-----------------------------------------",
+                "\n\n",
+                f"转换目标格式：【{target_format}】（扩展名：【.{target_ext}】）",
+                "格式排除列表：" + ("、".join(runtime_excluded_format_set)),
+                f"复制策略：{copy_method}",
+                "\n",
+                f"【输出的jpg图片质量】配置为：{jpg_quality}        ||        【jpg子采样选项】配置为：{jpg_subsample_option}",
+                f"【png无损压缩（zip）的等级】配置为：{png_compress_level}",
+                "\n",
+                f"转换RAW格式图片：{convert_raw}        ||        转换PDF：{convert_pdf}        ||        PDF转换模式：{pdf_mode}",
+                f"PDF页面渲染图缩放比例：{pdf_page_render_zoom_ratio}        ||        PDF内嵌图片直接输出：{pdf_inside_pic_direct_output}",
+                f"转换LIVP格式图片：{convert_livp}        ||        LIVP动态照片直接输出：{livp_direct_output}",
+                f"转换华为动态照片：{convert_hwlp}        ||        华为动态照片直接输出：{hwlp_direct_output}",
+                f"转换SVG图片：{convert_svg}        ||        SVG转换后直接输出PNG：{svg_direct_output_png}",
+                f"转换微信加密的dat图片：{convert_wechat_dat}        ||        微信dat图片解密后直接输出，不转换：{wechat_dat_direct_output}",
+                "\n",
+                f"保留RAW图片的exif：{perserve_raw_pic_exif}        ||        保留普通图片的exif：{perserve_common_pic_exif}",
+                f"使用exiftool额外增强保存一次exif ：{exif_enhance}",
+                f"调用exiftool后整理文件碎片的策略 ：{defrag_after_exiftool}",
+                "\n",
+                f"拷贝文件的内存缓冲区大小 ：{copy_file_buffer_size//1024//1024} MiB",
+                f"给临时日志文件预分配的空间大小 ：{log_file_allocate_size//1024//1024} MiB",
+                "\n\n\n\n\n",
+                "任务日志：⇩　⇩　⇩",
+                "\n",
+            ])
+        
+        )
+        
+        
+        
+        for seq_num , target_path in enumerate(args , start=1):
+            
+            reset_collections()
+            log(f"【{seq_num}】　→　＜　{target_path}　＞\n")
+            
+            if not (os.path.exists(target_path)):
+                log("❗　路径不存在")
+                error_list.append(copy(target_path))
+                continue
+            
+            # 检查目标路径所在盘符的文件系统类型是否支持硬链接
+            # 并配置此目标路径是否需要在调用exiftool后整理碎片文件
+            check_fs(target_path)
+            
+            if perserve_raw_pic_exif or exif_enhance:
+                log(f"★ 调用exiftool后整理文件碎片：{runtime_defrag}\n\n")
+            
+            # 目标是单个文件的情况
+            if os.path.isfile(target_path):
+                
+                file_total = 1
+                
+                os.chdir(os.path.dirname(target_path))
+                
+                input_locate_path = os.path.basename(target_path)
+                # 单文件不需要转移，所以不需要transfer_locate_path
+                output_locate_base = f"{os.path.splitext(input_locate_path)[0]}{single_file_output_suffix}"
+                
+                
+                try:
+                    src_f = open(input_locate_path,mode="rb")
+                    mf = my_custom_mmap(src_f.fileno(),length=0,access=mmap.ACCESS_READ)
+                except Exception as e:
+                    try:
+                        mf.close()
+                    except:
+                        pass
+                    try:
+                        src_f.close()
+                    except:
+                        pass
+                    log(f"▷▷       【{input_locate_path}】 作为文件打开时出错，跳过")
+                    error_list.append(copy(input_locate_path))
+                    progress_completed = 1
+                    continue
+                
+                
+                
+                with src_f , mf :
+                    
+                    if mf.size() > filesize_limit:
+                        log(f"▷     【{input_locate_path}】 超过文件大小限制（{filesize_limit}），跳过")
+                        excluded_list.append(copy(input_locate_path))
+                        progress_completed = 1
+                        continue
+                    
+                    try:
+                        mimetype = get_type(mf)
+                    except Exception as e:
+                        log(f"×    【{input_locate_path}】 获取mimetype出错，详情：{e}")
+                        error_list.append(copy(input_locate_path))
+                        progress_completed = 1
+                        continue
+                    
+                    
+                    # 处理微信dat加密图片
+                    if mimetype == "special/wechat_dat":
+                        
+                        if convert_wechat_dat:
+                            
+                            try:
+                                int_key , ext = wechat_xor_key
+                                wechat_output_name = make_single_out_name(output_locate_base , ext)
+                                convert_out_locate_path = make_single_out_name(output_locate_base , target_ext)
+                                
+                                with io.BytesIO( bytes( (i ^ int_key) for i in bytearray(mf) ) )  as  decoded_data_io:
+                                    
+                                    if wechat_dat_direct_output:
+                                        pre_allocate_write_output_file( wechat_output_name , decoded_data_io )
+                                        transfer_modify_time(input_locate_path , wechat_output_name)
+                                    
+                                    else:
+                                        with Image.open(decoded_data_io) as im:
+                                            
+                                            if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                                # 需要转换，原来的文件数据没用了
+                                                # 确保im完全加载，然后关掉decoded_data_io节省内存
+                                                im.load()
+                                                # load方法自动关掉了decoded_data_io，这边只是重复确认一下
+                                                decoded_data_io.close()
+                                                # 将im中的图片保存
+                                                pic_save(convert_out_locate_path , preserve_exif=perserve_common_pic_exif)
+                                                
+                                                if exif_enhance:
+                                                    # 【-Orientation#=1】：上面“ImageOps.exif_transpose()”已经将照片翻转好了，所以这边要重置翻转
+                                                    os.system(f"exiftool.exe -q -q -TagsFromFile \"{input_locate_path}\" -Orientation#=1 -overwrite_original \"{convert_out_locate_path}\"")
+                                                    defrag_process(convert_out_locate_path)
+                                            
+                                            else:
+                                                # 如果在这行注释的地方用im.close()，decoded_data_io也会被关掉，所以没太好的方法，暂时留着吧
+                                                pre_allocate_write_output_file( wechat_output_name , decoded_data_io )
+                                                transfer_modify_time(input_locate_path , wechat_output_name)
+                            
+                            
+                            except Exception as e:
+                                try_remove(wechat_output_name)
+                                try_remove(convert_out_locate_path)
+                                log(f"×    微信dat图片【{input_locate_path}】转换格式失败，详情：{e}")
+                                error_list.append(copy(input_locate_path))
+                                progress_completed = 1
+                                continue
+                            
+                            else:
+                                log(f"√  微信dat图片【{input_locate_path}】转换成功")
+                        
+                        else:
+                            log(f"◎        微信dat图片设置为不转换，跳过【{input_locate_path}】")
+                            excluded_list.append(copy(input_locate_path))
+                    
+                    
+                    # 处理华为动态图片
+                    elif mimetype == "special/hwlp":
+                        
+                        if convert_hwlp:
+                            hwlp_jpg_output_path = make_single_out_name(output_locate_base , "jpg")
+                            hwlp_mp4_output_path = make_single_out_name(output_locate_base , "mp4")
+                            convert_out_locate_path = make_single_out_name(output_locate_base , target_ext)
+                            
+                            try:
+                                with io.BytesIO(mf[0:jpg_end_offset]) as jpg_io:
+                                    # 导出图片
+                                    if hwlp_direct_output:
+                                        pre_allocate_write_output_file(hwlp_jpg_output_path , mf[0:jpg_end_offset])
+                                        transfer_modify_time(input_locate_path , hwlp_jpg_output_path)
+                                    else:
+                                        with Image.open(jpg_io) as im :
+                                            if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                                # 需要转换，原来的文件数据没用了
+                                                # 确保im完全加载，然后关掉jpg_io节省内存
+                                                im.load()
+                                                # load方法自动关掉了jpg_io，这边只是重复确认一下
+                                                jpg_io.close()
+                                                # 将im中的图片保存
+                                                pic_save(convert_out_locate_path , preserve_exif=perserve_common_pic_exif)
+                                            else:
+                                                # 如果在这行注释的地方用im.close()，jpg_io也会被关掉，所以没太好的方法，暂时留着吧
+                                                pre_allocate_write_output_file(hwlp_jpg_output_path , jpg_io)
+                                                transfer_modify_time(input_locate_path , hwlp_jpg_output_path)
+                                
+                                # 导出视频
+                                pre_allocate_write_output_file(hwlp_mp4_output_path , mf[mp4_start_offset:mp4_end_offset])
+                                transfer_modify_time(input_locate_path , hwlp_mp4_output_path)
+                            
+                            except Exception as e:
+                                try_remove(hwlp_jpg_output_path)# 删除可能输出的问题残留
+                                try_remove(hwlp_mp4_output_path)# 删除可能输出的问题残留
+                                try_remove(convert_out_locate_path)# 删除可能输出的问题残留
+                                
+                                log(f"× ×  【{input_locate_path}】 作为华为动态照片导出时失败，详情：{e}")
+                                error_list.append(copy(input_locate_path))
+                                progress_completed = 1
+                                continue
+                            
+                            else:
+                                log(f"√       华为动态照片【{input_locate_path}】导出成功")
+                        
+                        else:
+                            log(f"◎        华为动态照片被设置为不转换，跳过【{input_locate_path}】")
+                            excluded_list.append(copy(input_locate_path))
+                    
+                    
+                    # 处理SVG
+                    elif mimetype == "special/svg":
+                        
+                        if convert_svg:
+                            svg_output_name = make_single_out_name(output_locate_base , "png")
+                            convert_out_locate_path = make_single_out_name(output_locate_base , target_ext)
+                            
+                            try:
+                                
+                                with io.BytesIO() as tmp_io:
+                                    #mf.seek(0 , os.SEEK_SET)
+                                    # 这个mf（mmap.mmap）属实有点特殊，如果没有修改cairosvg库
+                                    # 在这里如果不“seek(0)”的话，下面一行就读不到mf的文件数据
+                                    # （我已经改了cairosvg库，所以注释掉了）
+                                    cairosvg.svg2png(file_obj=mf , write_to=tmp_io)
+                                    
+                                    if svg_direct_output_png or (target_format=="PNG"):
+                                        pre_allocate_write_output_file(svg_output_name , tmp_io)
+                                    else:
+                                        with Image.open(tmp_io) as im:
+                                            if (not has_only_one_frame(im)):
+                                                pre_allocate_write_output_file(svg_output_name , tmp_io)
+                                            else:
+                                                # 需要转换，原来的文件数据没用了
+                                                # 确保im完全加载，然后关掉tmp_io节省内存
+                                                im.load()
+                                                # load方法自动关掉了tmp_io，这边只是重复确认一下
+                                                tmp_io.close()
+                                                # cairosvg输出的PNG应该没有关于旋转的exif定义，所以这边不根据exif旋转图片了
+                                                pic_save(convert_out_locate_path , preserve_exif=perserve_common_pic_exif , exif_rotate=False)
+                                                
+                                                # exiftool支持从源SVG文件读取exif
+                                                if exif_enhance:
+                                                    # 【-Orientation#=1】：上面“ImageOps.exif_transpose()”已经将照片翻转好了，所以这边要重置翻转
+                                                    os.system(f"exiftool.exe -q -q -TagsFromFile \"{input_locate_path}\" -Orientation#=1 -overwrite_original \"{convert_out_locate_path}\"")
+                                                    defrag_process(convert_out_locate_path)
+                            
+                            except Exception as e:
+                                try_remove(svg_output_name)# 删除可能输出的问题残留
+                                try_remove(convert_out_locate_path)# 删除可能输出的问题残留
+                                log(f"×    SVG图片【{input_locate_path}】转换格式失败，详情：{e}")
+                                error_list.append(copy(input_locate_path))
+                                progress_completed = 1
+                                continue
+                            
+                            else:
+                                log(f"√  SVG图片【{input_locate_path}】转换成功")
+                        
+                        
+                        
+                        else:
+                            log(f"◎        SVG图片设置为不转换，跳过【{input_locate_path}】")
+                            excluded_list.append(copy(input_locate_path))
+                    
+                    
+                    # 处理RAW格式
+                    elif mimetype == "special/raw":
+                        
+                        if convert_raw:
+                            convert_out_locate_path = make_single_out_name(output_locate_base , target_ext)
+                            
+                            with raw_structure:
+                                try:
+                                    # 【use_camera_wb=True】：使用相机的白平衡
+                                    rgb = raw_structure.postprocess(use_camera_wb=True)
+                                except Exception as e:
+                                    log(f"× × ×    【{input_locate_path}】 raw文件在rawpy后处理中出错，详情：{e}")
+                                    error_list.append(copy(input_locate_path))
+                                    progress_completed = 1
+                                    continue
+                            
+                            try:
+                                im = Image.fromarray(rgb)
+                                im.load() # 确保矩阵删除释放内存前被完全加载
+                            except Exception as e:
+                                # 释放内存，一个RAW格式图片转换出的矩阵尺寸应该很大
+                                try:
+                                    del rgb
+                                except:
+                                    pass
+                                log(f"× × ×    【{input_locate_path}】 raw文件在pillow打开传递过来的向量中出错，详情：{e}")
+                                error_list.append(copy(input_locate_path))
+                                progress_completed = 1
+                                continue
+                            else:
+                                # 释放内存，一个RAW格式图片转换出的矩阵尺寸应该很大
+                                try:
+                                    del rgb
+                                except:
+                                    pass
+                            
+                            with im:
+                                try:
+                                    # 传递过来的array中不含有exif，且上面rawpy后处理中已经根据raw中的exif，把图片翻转摆正了
+                                    # 所以这边也不根据exif翻转图片，万一真的有exif传过来，再翻转就乱套了
+                                    pic_save(convert_out_locate_path , preserve_exif=False , exif_rotate=False)
+                                    
+                                    if perserve_raw_pic_exif:
+                                        # 传递过来的array中不含有exif，所以要用exiftool转移exif至输出文件
+                                        # 【-Orientation#=1】：rawpy后处理时会自动根据raw文件中的exif翻转照片，所以这边要重置翻转
+                                        os.system(f"exiftool.exe -q -q -TagsFromFile \"{input_locate_path}\" -Orientation#=1 -overwrite_original \"{convert_out_locate_path}\"")
+                                        defrag_process(convert_out_locate_path)
+                                
+                                except Exception as e:
+                                    try_remove(convert_out_locate_path)# 删除可能输出的问题残留
+                                    log(f"× × ×    【{input_locate_path}】 raw文件在pillow保存为“{target_format}”中出错，详情：{e}")
+                                    error_list.append(copy(input_locate_path))
+                                    progress_completed = 1
+                                    continue
+                                else:
+                                    log(f"√ 【{input_locate_path}】 raw文件转换成功")
+                        
+                        
+                        else:
+                            try:
+                                raw_structure.close()
+                            except:
+                                pass
+                            log(f"◎        RAW格式图片被设置为不转换，跳过【{input_locate_path}】")
+                            excluded_list.append(copy(input_locate_path))
+                            progress_completed = 1
+                            continue
+                    
+                    
+                    # 处理一般pillow可处理的图片
+                    elif "image/" in mimetype:
+                        
+                        try:
+                            im = Image.open(mf)
+                        except Exception as e:
+                            log(f"×    【{input_locate_path}】 作为图片打开时失败，详情：{e}")
+                            error_list.append(copy(input_locate_path))
+                            progress_completed = 1
+                            continue
+                        
+                        with im:
+                            
+                            if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                
+                                convert_out_locate_path = make_single_out_name(output_locate_base , target_ext)
+                                
+                                try:
+                                    # 将im中的图片保存
+                                    pic_save(convert_out_locate_path , preserve_exif=perserve_common_pic_exif)
+                                    
+                                    if exif_enhance:
+                                        # 【-Orientation#=1】：上面“ImageOps.exif_transpose()”已经将照片翻转好了，所以这边要重置翻转
+                                        os.system(f"exiftool.exe -q -q -TagsFromFile \"{input_locate_path}\" -Orientation#=1 -overwrite_original \"{convert_out_locate_path}\"")
+                                        defrag_process(convert_out_locate_path)
+                                
+                                except Exception as e:
+                                    try_remove(convert_out_locate_path)# 删除可能输出的问题残留
+                                    log(f"×    【{input_locate_path}】 转换格式失败，详情：{e}")
+                                    error_list.append(copy(input_locate_path))
+                                    progress_completed = 1
+                                    continue
+                                else:
+                                    log(f"√ 【{input_locate_path}】 转换成功")
+                            
+                            else:
+                                log(f"▷        【{input_locate_path}】 的格式被排除或含有多个帧，不转换")
+                                excluded_list.append(copy(input_locate_path))
+                    
+                    
+                    # 处理PDF
+                    elif mimetype == "application/pdf":
+                        
+                        if convert_pdf:
+                            
+                            crc32_set.clear()
+                            pdf_output_main_dir = make_single_out_name(output_locate_base , "")
+                            
+                            try:
+                                pdf_handle = pymupdf.Document(stream=mf , filetype="pdf")
+                            except Exception as e:
+                                log(f"×    【{input_locate_path}】 作为PDF打开时失败，详情：{e}")
+                                error_list.append(copy(input_locate_path))
+                                progress_completed = 1
+                                continue
+                            
+                            try:
+                                with pdf_handle:
+                                    # 创建和PDF同名（不带扩展名）的输出文件夹
+                                    os.mkdir(pdf_output_main_dir)
+                                    
+                                    if pdf_mode in {0,1}:
+                                        
+                                        inside_img_output_path = f"{pdf_output_main_dir}\\PDF中嵌入的图片"
+                                        os.mkdir(inside_img_output_path)
+                                        
+                                        
+                                        pic_num = 1
+                                        for xref in range(1 , pdf_handle.xref_length()):
+                                            
+                                            try:
+                                                img_dict = pdf_handle.extract_image(xref)
+                                            except:
+                                                continue
+                                            
+                                            # 是图片、有文件数据、数据不重复
+                                            if (file_data := img_dict.get('image',None)) \
+                                            and (crc_value := crc32c.crc32c(file_data)) not in crc32_set:
+                                                crc32_set.add(crc_value)
+                                                ext = img_dict.get("ext","")
+                                                
+                                                del img_dict # 已经没用了
+                                                
+                                                try:
+                                                    file_data = io.BytesIO(file_data)
+                                                    with file_data:
+                                                        if pdf_inside_pic_direct_output:
+                                                            pre_allocate_write_output_file(f"{inside_img_output_path}\\{str(pic_num).zfill(3)}.{ext}"  ,  file_data)
+                                                        else:
+                                                            with Image.open(file_data) as im:
+                                                                if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                                                    # 需要转换，原来的文件数据没用了
+                                                                    # 确保im完全加载，然后关掉file_data节省内存
+                                                                    im.load()
+                                                                    # load方法自动关掉了file_data，这边只是重复确认一下
+                                                                    file_data.close()
+                                                                    # 将im中的图片保存
+                                                                    pic_save(f"{inside_img_output_path}\\{str(pic_num).zfill(3)}.{target_ext}" , preserve_exif=perserve_common_pic_exif)
+                                                                else:
+                                                                    # 如果在这行注释的地方用im.close()，file_data也会被关掉，所以没太好的方法，暂时留着吧
+                                                                    pre_allocate_write_output_file(f"{inside_img_output_path}\\{str(pic_num).zfill(3)}.{ext}"  ,  file_data)
+                                                except:
+                                                    continue
+                                                else:
+                                                    pic_num += 1
+                                            
+                                            else:
+                                                del file_data , img_dict
+                                        
+                                        if pic_num == 1:#无图片成功导出
+                                            try_remove(inside_img_output_path)
+                                    
+                                    if pdf_mode in {0,2}:
+                                        inside_page_render_output_path = f"{pdf_output_main_dir}\\PDF页面渲染图"
+                                        os.mkdir(inside_page_render_output_path)
+                                        mat = pymupdf.Matrix(pdf_page_render_zoom_ratio , pdf_page_render_zoom_ratio)
+                                        
+                                        page_num = 1
+                                        for page in pdf_handle.pages():
+                                            try:
+                                                page_pixmap = page.get_pixmap(matrix=mat)
+                                                with io.BytesIO() as tmp_io:
+                                                    # 生成的页面渲染图中不带透明信息，除非上面一步get_pixmap()传入了“alpha=True”
+                                                    # 详情请看：https://pymupdf.readthedocs.io/en/latest/page.html#Page.get_pixmap
+                                                    # 应该大概率不含exif信息（包括旋转信息）
+                                                    page_pixmap.pil_save(fp=tmp_io , format=target_format , quality=jpg_quality , subsampling=jpg_subsample_option)
+                                                    pre_allocate_write_output_file(f"{inside_page_render_output_path}\\{str(page_num).zfill(3)}.{target_ext}" , tmp_io)
+                                            except:
+                                                continue
+                                            else:
+                                                page_num += 1
+                                        
+                                        if page_num == 1:#无页面成功渲染
+                                            try_remove(inside_page_render_output_path)
+                            
+                            
+                            except Exception as e:
+                                try_remove(pdf_output_main_dir)# 删除可能输出的问题残留
+                                log(f"×    PDF文件【{input_locate_path}】转换格式失败，详情：{e}")
+                                error_list.append(copy(input_locate_path))
+                                progress_completed = 1
+                                continue
+                            else:
+                                log(f"√    PDF文件【{input_locate_path}】转换成功")
+                        
+                        else:
+                            log(f"◎      PDF被设置为不转换，跳过【{input_locate_path}】")
+                            excluded_list.append(copy(input_locate_path))
+                    
+                    
+                    # livp格式是zip压缩包
+                    elif mimetype == "application/zip":
+                        
+                        zip_extra_path = "."
+                        
+                        try:
+                            zfh = zipfile.ZipFile(mf)
+                            z_object_list = zfh.infolist()
+                            z_file_info_list = [i for i in z_object_list if i.is_file()] # 排除zip里的文件夹
+                            log(f"▷        【{input_locate_path}】 满足zip文件条件，可能是livp文件")
+                        except Exception as e:
+                            try:
+                                zfh.close()
+                            except:
+                                pass
+                            log(f"×    【{input_locate_path}】 作为压缩包打开处理过程中出错，详情：{e}")
+                            error_list.append(copy(input_locate_path))
+                            progress_completed = 1
+                            continue
+                        
+                        with zfh:
+                            
+                            # 如果压缩包里存在1个文件夹，其下2个文件，“.namelist()”中个数就会是3个
+                            if len(z_file_info_list) == len(z_object_list) == 2:
+                                
+                                log(f"▷▷       【{input_locate_path}】 满足livp文件数量为2个的特征")
+                                
+                                if convert_livp:
+                                    successfully_processed_zfile_num = 0
+                                    for z_info in z_file_info_list:
+                                        z_file = z_info.filename
+                                        z_name = os.path.splitext(z_file)[0]
+                                        z_output_locate_path = f"{zip_extra_path}\\{z_name}.{target_ext}"
+                                        z_copy_out_locate_path = f"{zip_extra_path}\\{z_file}"
+                                        
+                                        try:
+                                            f = zfh.open(z_info)
+                                        except Exception as e:
+                                            log(f"×    【{input_locate_path} ⇨ {z_file}】 作为压缩包下的文件打开出错，已跳过，详情：{e}")
+                                            continue
+                                        
+                                        with f:
+                                            
+                                            try:
+                                                mimetype = get_type(f)
+                                            except Exception as e:
+                                                log(f"×    【{input_locate_path} ⇨ {z_file}】 获取mimetype出错，详情：{e}")
+                                                continue
+                                            
+                                            
+                                            if ("image/" in mimetype) or ( (tmp := (os.path.splitext(z_file)[1][1:]).lower()) in {"jpg","jpeg","heic","heif","png","bmp","tiff"} ):
+                                                
+                                                if livp_direct_output:
+                                                    try:
+                                                        pre_allocate_write_output_file(z_copy_out_locate_path , f)
+                                                    except Exception as e:
+                                                        try_remove(z_copy_out_locate_path)# 删除可能输出的问题残留
+                                                        log(f"  × × ×      【{input_locate_path} ⇨ {z_file}】 直接输出失败，详情：{e}")
+                                                        continue
+                                                    else:
+                                                        transfer_modify_time(z_info , z_copy_out_locate_path)
+                                                        log(f"▷▷▷▷      【{input_locate_path} ⇨ {z_file}】 直接输出成功 √")
+                                                
+                                                else:
+                                                    try:
+                                                        im = Image.open(f)
+                                                    except Exception as e:
+                                                        log(f"▷▷▷▷ × × ×【{input_locate_path} ⇨ {z_file}】 作为图片打开时出错，详情：{e}")
+                                                        continue
+                                                    
+                                                    with im:
+                                                        
+                                                        if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                                            log(f"▷▷▷       【{input_locate_path} ⇨ {z_file}】 需要转换图片格式")
+                                                            
+                                                            try:
+                                                                # 需要转换，原来的文件数据没用了
+                                                                # 确保im完全加载，然后关掉f节省内存
+                                                                im.load()
+                                                                # load方法自动关掉了f，这边只是重复确认一下
+                                                                f.close()
+                                                                # 将im中的图片保存
+                                                                pic_save(z_output_locate_path , preserve_exif=perserve_common_pic_exif)
+                                                            
+                                                            except Exception as e:
+                                                                try_remove(z_output_locate_path)# 删除可能输出的问题残留
+                                                                log(f"  × × ×      【{input_locate_path} ⇨ {z_file}】 转换格式失败，详情：{e}")
+                                                                continue
+                                                            else:
+                                                                log(f"▷▷▷▷      【{input_locate_path} ⇨ {z_file}】 转换成功 √")
+                                                        
+                                                        else:
+                                                            log(f"▷▷▷       【{input_locate_path} ⇨ {z_file}】 的格式被排除或含有多个帧，不转换，原样导出")
+                                                            
+                                                            try:
+                                                                # 如果在这行注释的地方用im.close()，f也会被关掉，所以没太好的方法，暂时留着吧
+                                                                pre_allocate_write_output_file(z_copy_out_locate_path , f)
+                                                            except Exception as e:
+                                                                try_remove(z_copy_out_locate_path)# 删除可能输出的问题残留
+                                                                log(f"  × × ×      【{input_locate_path} ⇨ {z_file}】 提取失败，详情：{e}")
+                                                                continue
+                                                            else:
+                                                                transfer_modify_time(z_info , z_copy_out_locate_path)
+                                                                log(f"▷▷▷▷      【{input_locate_path} ⇨ {z_file}】 导出成功 √")
+                                            
+                                            
+                                            
+                                            elif ("video/" in mimetype) or (tmp in {"mov","m4v","mp4","ts","mkv","flv"}):
+                                                
+                                                log(f"▷▷▷       【{input_locate_path} ⇨ {z_file}】 为livp文件附带视频片段，原样导出")
+                                                
+                                                try:
+                                                    pre_allocate_write_output_file(z_copy_out_locate_path , f)
+                                                except Exception as e:
+                                                    try_remove(z_copy_out_locate_path)# 删除可能输出的问题残留
+                                                    log(f"  × × ×      【{input_locate_path} ⇨ {z_file}】 提取失败，详情：{e}")
+                                                    continue
+                                                else:
+                                                    transfer_modify_time(z_info , z_copy_out_locate_path)
+                                                    log(f"▷▷▷▷      【{input_locate_path} ⇨ {z_file}】 导出成功 √")
+                                            
+                                            else:
+                                                log(f"▶▶▶       【{input_locate_path} ⇨ {z_file}】 为其他文件")
+                                            
+                                            successfully_processed_zfile_num += 1
+                                    
+                                    if successfully_processed_zfile_num != 2:
+                                        log(f"×    【{input_locate_path}】 作为压缩包打开处理过程中出错，跳过")
+                                        error_list.append(f"{input_locate_path}")
+                                
+                                else:
+                                    log(f"◎        LIVP格式图片被设置为不转换，跳过【{input_locate_path}】")
+                                    excluded_list.append(copy(input_locate_path))
+                            
+                            else:
+                                log(f"▷▷       【{input_locate_path}】 为普通压缩包，跳过")
+                                excluded_list.append(copy(input_locate_path))
+                    
+                    
+                    
+                    
+                    else:
+                        log(f"▷        【{input_locate_path}】 不是图片文件，跳过")
+                        excluded_list.append(copy(input_locate_path))
+                
+                progress_completed = 1
+            
+            
+            
+            # 目标路径是文件夹的情况 
+            elif os.path.isdir(target_path):
+                # 递归扫描所有文件和文件夹，文件夹列表用作建立输出的目录结构时使用
+                os.chdir(target_path)
+                for root , foldersets , filesets in os.walk("."):
+                    for file in filesets:
+                        filelist.append(f"{root}\\{file}"[2:])
+                    for folder in foldersets:
+                        folderlist.append(f"{root}\\{folder}"[2:])
+                os.chdir("..")
+                
+                input_folder_name = os.path.basename(target_path)
+                make_output_dir(input_folder_name) # 函数中决定了全局变量：output_folder_name = "xxxxxx"
+                
+                file_total = len(filelist)
+                
+                for file in filelist:
+                    
+                    log("\n")
+                    
+                    input_locate_path = f"{input_folder_name}\\{file}"
+                    transfer_locate_path = f"{output_folder_name}\\{file}"
+                    output_locate_base = f"{output_folder_name}\\{os.path.splitext(file)[0]}"
+                    
+                    
+                    try:
+                        src_f = open(input_locate_path,mode="rb")
+                        mf = my_custom_mmap(src_f.fileno(),length=0,access=mmap.ACCESS_READ)
+                    except Exception as e:
+                        try:
+                            mf.close()
+                        except:
+                            pass
+                        try:
+                            src_f.close()
+                        except:
+                            pass
+                        log(f"▷▷       【{input_locate_path}】 作为文件打开时出错，跳过，尝试保持原样硬链接或拷贝到输出目录")
+                        transfer_file(input_locate_path, transfer_locate_path)
+                        error_list.append(copy(input_locate_path))
+                        progress_completed += 1
+                        continue
+                    
+                    
+                    
+                    with src_f , mf :
+                        
+                        if mf.size() > filesize_limit:
+                            log(f"▷     【{input_locate_path}】 超过文件大小限制（{filesize_limit}），跳过")
+                            log(f"▷▷    保持原样硬链接或拷贝到输出目录")
+                            transfer_file(input_locate_path, transfer_locate_path, mf)
+                            excluded_list.append(copy(input_locate_path))
+                            progress_completed += 1
+                            continue
+                        
+                        try:
+                            mimetype = get_type(mf)
+                        except Exception as e:
+                            log(f"×    【{input_locate_path}】 获取mimetype出错，详情：{e}")
+                            log(f"▷▷    保持原样硬链接或拷贝到输出目录")
+                            transfer_file(input_locate_path, transfer_locate_path, mf)
+                            error_list.append(copy(input_locate_path))
+                            progress_completed += 1
+                            continue
+                        
+                        # 处理微信dat加密图片
+                        if mimetype == "special/wechat_dat":
+                            
+                            if convert_wechat_dat:
+                                
+                                try:
+                                    int_key , ext = wechat_xor_key
+                                    wechat_output_name = f"{output_locate_base}.{ext}"
+                                    convert_out_locate_path = f"{output_locate_base}.{target_ext}"
+                                    
+                                    with io.BytesIO( bytes( (i ^ int_key) for i in bytearray(mf) ) )  as  decoded_data_io:
+                                        
+                                        if wechat_dat_direct_output:
+                                            pre_allocate_write_output_file( wechat_output_name , decoded_data_io )
+                                            transfer_modify_time(input_locate_path , wechat_output_name)
+                                        
+                                        else:
+                                            with Image.open(decoded_data_io) as im:
+                                                
+                                                if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                                    # 需要转换，原来的文件数据没用了
+                                                    # 确保im完全加载，然后关掉decoded_data_io节省内存
+                                                    im.load()
+                                                    # load方法自动关掉了decoded_data_io，这边只是重复确认一下
+                                                    decoded_data_io.close()
+                                                    # 将im中的图片保存
+                                                    pic_save(convert_out_locate_path , preserve_exif=perserve_common_pic_exif)
+                                                    
+                                                    if exif_enhance:
+                                                        # 【-Orientation#=1】：上面“ImageOps.exif_transpose()”已经将照片翻转好了，所以这边要重置翻转
+                                                        os.system(f"exiftool.exe -q -q -TagsFromFile \"{input_locate_path}\" -Orientation#=1 -overwrite_original \"{convert_out_locate_path}\"")
+                                                        defrag_process(convert_out_locate_path)
+                                                
+                                                else:
+                                                    # 如果在这行注释的地方用im.close()，decoded_data_io也会被关掉，所以没太好的方法，暂时留着吧
+                                                    pre_allocate_write_output_file( wechat_output_name , decoded_data_io )
+                                                    transfer_modify_time(input_locate_path , wechat_output_name)
+                                
+                                
+                                except Exception as e:
+                                    try_remove(wechat_output_name)
+                                    try_remove(convert_out_locate_path)
+                                    log(f"×    微信dat图片【{input_locate_path}】转换格式失败，详情：{e}")
+                                    log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                    transfer_file(input_locate_path, transfer_locate_path, mf)
+                                    error_list.append(copy(input_locate_path))
+                                    progress_completed += 1
+                                    continue
+                                
+                                else:
+                                    log(f"√  微信dat图片【{input_locate_path}】转换成功")
+                            
+                            else:
+                                log(f"◎        微信dat图片设置为不转换，跳过【{input_locate_path}】")
+                                log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                transfer_file(input_locate_path, transfer_locate_path, mf)
+                                excluded_list.append(copy(input_locate_path))
+                        
+                        
+                        # 处理华为动态图片
+                        elif mimetype == "special/hwlp":
+                            
+                            if convert_hwlp:
+                                hwlp_jpg_output_path = f"{output_locate_base}.jpg"
+                                hwlp_mp4_output_path = f"{output_locate_base}.mp4"
+                                convert_out_locate_path = f"{output_locate_base}.{target_ext}"
+                                
+                                try:
+                                    with io.BytesIO(mf[0:jpg_end_offset]) as jpg_io:
+                                        # 导出图片
+                                        if hwlp_direct_output:
+                                            pre_allocate_write_output_file(hwlp_jpg_output_path , mf[0:jpg_end_offset])
+                                            transfer_modify_time(input_locate_path , hwlp_jpg_output_path)
+                                        else:
+                                            with Image.open(jpg_io) as im :
+                                                if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                                    # 需要转换，原来的文件数据没用了
+                                                    # 确保im完全加载，然后关掉jpg_io节省内存
+                                                    im.load()
+                                                    # load方法自动关掉了jpg_io，这边只是重复确认一下
+                                                    jpg_io.close()
+                                                    # 将im中的图片保存
+                                                    pic_save(convert_out_locate_path , preserve_exif=perserve_common_pic_exif)
+                                                else:
+                                                    # 如果在这行注释的地方用im.close()，jpg_io也会被关掉，所以没太好的方法，暂时留着吧
+                                                    pre_allocate_write_output_file(hwlp_jpg_output_path , jpg_io)
+                                                    transfer_modify_time(input_locate_path , hwlp_jpg_output_path)
+                                    
+                                    # 导出视频
+                                    pre_allocate_write_output_file(hwlp_mp4_output_path , mf[mp4_start_offset:mp4_end_offset])
+                                    transfer_modify_time(input_locate_path , hwlp_mp4_output_path)
+                                
+                                except Exception as e:
+                                    try_remove(hwlp_jpg_output_path)# 删除可能输出的问题残留
+                                    try_remove(hwlp_mp4_output_path)# 删除可能输出的问题残留
+                                    try_remove(convert_out_locate_path)# 删除可能输出的问题残留
+                                    
+                                    log(f"× ×  【{input_locate_path}】 作为华为动态照片导出时失败，详情：{e}")
+                                    log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                    transfer_file(input_locate_path, transfer_locate_path, mf)
+                                    error_list.append(copy(input_locate_path))
+                                    progress_completed += 1
+                                    continue
+                                
+                                else:
+                                    log(f"√       华为动态照片【{input_locate_path}】导出成功")
+                            
+                            else:
+                                log(f"◎        华为动态照片被设置为不转换，跳过【{input_locate_path}】")
+                                log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                transfer_file(input_locate_path, transfer_locate_path, mf)
+                                excluded_list.append(copy(input_locate_path))
+                        
+                        
+                        # 处理SVG
+                        elif mimetype == "special/svg":
+                            
+                            if convert_svg:
+                                svg_output_name = f"{output_locate_base}.png"
+                                convert_out_locate_path = f"{output_locate_base}.{target_ext}"
+                                
+                                try:
+                                    
+                                    with io.BytesIO() as tmp_io:
+                                        #mf.seek(0 , os.SEEK_SET)
+                                        # 这个mf（mmap.mmap）属实有点特殊，如果没有修改cairosvg库
+                                        # 在这里如果不“seek(0)”的话，下面一行就读不到mf的文件数据
+                                        # （我已经改了cairosvg库，所以注释掉了）
+                                        cairosvg.svg2png(file_obj=mf , write_to=tmp_io)
+                                        
+                                        if svg_direct_output_png or (target_format=="PNG"):
+                                            pre_allocate_write_output_file(svg_output_name , tmp_io)
+                                        else:
+                                            with Image.open(tmp_io) as im:
+                                                if (not has_only_one_frame(im)):
+                                                    pre_allocate_write_output_file(svg_output_name , tmp_io)
+                                                else:
+                                                    # 需要转换，原来的文件数据没用了
+                                                    # 确保im完全加载，然后关掉tmp_io节省内存
+                                                    im.load()
+                                                    # load方法自动关掉了tmp_io，这边只是重复确认一下
+                                                    tmp_io.close()
+                                                    # cairosvg输出的PNG应该没有关于旋转的exif定义，所以这边不根据exif旋转图片了
+                                                    pic_save(convert_out_locate_path , preserve_exif=perserve_common_pic_exif , exif_rotate=False)
+                                                    
+                                                    # exiftool支持从源SVG文件读取exif
+                                                    if exif_enhance:
+                                                        # 【-Orientation#=1】：上面“ImageOps.exif_transpose()”已经将照片翻转好了，所以这边要重置翻转
+                                                        os.system(f"exiftool.exe -q -q -TagsFromFile \"{input_locate_path}\" -Orientation#=1 -overwrite_original \"{convert_out_locate_path}\"")
+                                                        defrag_process(convert_out_locate_path)
+                                
+                                except Exception as e:
+                                    try_remove(svg_output_name)# 删除可能输出的问题残留
+                                    try_remove(convert_out_locate_path)# 删除可能输出的问题残留
+                                    log(f"×    SVG图片【{input_locate_path}】转换格式失败，详情：{e}")
+                                    log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                    transfer_file(input_locate_path, transfer_locate_path, mf)
+                                    error_list.append(copy(input_locate_path))
+                                    progress_completed += 1
+                                    continue
+                                
+                                else:
+                                    log(f"√  SVG图片【{input_locate_path}】转换成功")
+                            
+                            
+                            
+                            else:
+                                log(f"◎        SVG图片设置为不转换，跳过【{input_locate_path}】")
+                                log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                transfer_file(input_locate_path, transfer_locate_path, mf)
+                                excluded_list.append(copy(input_locate_path))
+                        
+                        
+                        # 处理RAW格式
+                        elif mimetype == "special/raw":
+                            
+                            if convert_raw:
+                                convert_out_locate_path = f"{output_locate_base}.{target_ext}"
+                                
+                                with raw_structure:
+                                    try:
+                                        # 【use_camera_wb=True】：使用相机的白平衡
+                                        rgb = raw_structure.postprocess(use_camera_wb=True)
+                                    except Exception as e:
+                                        log(f"× × ×    【{input_locate_path}】 raw文件在rawpy后处理中出错，详情：{e}")
+                                        log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                        transfer_file(input_locate_path, transfer_locate_path, mf)
+                                        error_list.append(copy(input_locate_path))
+                                        progress_completed += 1
+                                        continue
+                                
+                                try:
+                                    im = Image.fromarray(rgb)
+                                    im.load() # 确保矩阵删除释放内存前被完全加载
+                                except Exception as e:
+                                    # 释放内存，一个RAW格式图片转换出的矩阵尺寸应该很大
+                                    try:
+                                        del rgb
+                                    except:
+                                        pass
+                                    log(f"× × ×    【{input_locate_path}】 raw文件在pillow打开传递过来的向量中出错，详情：{e}")
+                                    log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                    transfer_file(input_locate_path, transfer_locate_path, mf)
+                                    error_list.append(copy(input_locate_path))
+                                    progress_completed += 1
+                                    continue
+                                else:
+                                    # 释放内存，一个RAW格式图片转换出的矩阵尺寸应该很大
+                                    try:
+                                        del rgb
+                                    except:
+                                        pass
+                                
+                                with im:
+                                    try:
+                                        # 传递过来的array中不含有exif，且上面rawpy后处理中已经根据raw中的exif，把图片翻转摆正了
+                                        # 所以这边也不根据exif翻转图片，万一真的有exif传过来，再翻转就乱套了
+                                        pic_save(convert_out_locate_path , preserve_exif=False , exif_rotate=False)
+                                        
+                                        if perserve_raw_pic_exif:
+                                            # 传递过来的array中不含有exif，所以要用exiftool转移exif至输出文件
+                                            # 【-Orientation#=1】：rawpy后处理时会自动根据raw文件中的exif翻转照片，所以这边要重置翻转
+                                            os.system(f"exiftool.exe -q -q -TagsFromFile \"{input_locate_path}\" -Orientation#=1 -overwrite_original \"{convert_out_locate_path}\"")
+                                            defrag_process(convert_out_locate_path)
+                                    
+                                    except Exception as e:
+                                        try_remove(convert_out_locate_path)# 删除可能输出的问题残留
+                                        log(f"× × ×    【{input_locate_path}】 raw文件在pillow保存为“{target_format}”中出错，详情：{e}")
+                                        log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                        transfer_file(input_locate_path, transfer_locate_path, mf)
+                                        error_list.append(copy(input_locate_path))
+                                        progress_completed += 1
+                                        continue
+                                    else:
+                                        log(f"√ 【{input_locate_path}】 raw文件转换成功")
+                            
+                            
+                            else:
+                                try:
+                                    raw_structure.close()
+                                except:
+                                    pass
+                                log(f"◎        RAW格式图片被设置为不转换，跳过【{input_locate_path}】")
+                                log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                transfer_file(input_locate_path, transfer_locate_path, mf)
+                                excluded_list.append(copy(input_locate_path))
+                                progress_completed += 1
+                                continue
+                        
+                        
+                        # 处理一般pillow可处理的图片
+                        elif "image/" in mimetype:
+                            
+                            try:
+                                im = Image.open(mf)
+                            except Exception as e:
+                                log(f"×    【{input_locate_path}】 作为图片打开时失败，详情：{e}")
+                                log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                transfer_file(input_locate_path, transfer_locate_path, mf)
+                                error_list.append(copy(input_locate_path))
+                                progress_completed += 1
+                                continue
+                            
+                            with im:
+                                
+                                if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                    convert_out_locate_path = f"{output_locate_base}.{target_ext}"
+                                    
+                                    try:
+                                        # 将im中的图片保存
+                                        pic_save(convert_out_locate_path , preserve_exif=perserve_common_pic_exif)
+                                        
+                                        if exif_enhance:
+                                            # 【-Orientation#=1】：上面“ImageOps.exif_transpose()”已经将照片翻转好了，所以这边要重置翻转
+                                            os.system(f"exiftool.exe -q -q -TagsFromFile \"{input_locate_path}\" -Orientation#=1 -overwrite_original \"{convert_out_locate_path}\"")
+                                            defrag_process(convert_out_locate_path)
+                                    
+                                    except Exception as e:
+                                        try_remove(convert_out_locate_path)# 删除可能输出的问题残留
+                                        log(f"×    【{input_locate_path}】 转换格式失败，详情：{e}")
+                                        log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                        transfer_file(input_locate_path, transfer_locate_path, mf)
+                                        error_list.append(copy(input_locate_path))
+                                        progress_completed += 1
+                                        continue
+                                    else:
+                                        log(f"√ 【{input_locate_path}】 转换成功")
+                                
+                                else:
+                                    log(f"▷        【{input_locate_path}】 的格式被排除或含有多个帧，不转换")
+                                    log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                    transfer_file(input_locate_path, transfer_locate_path, mf)
+                                    excluded_list.append(copy(input_locate_path))
+                        
+                        
+                        # 处理PDF
+                        elif mimetype == "application/pdf":
+                            
+                            if convert_pdf:
+                                
+                                crc32_set.clear()
+                                pdf_output_main_dir = copy(transfer_locate_path)
+                                
+                                try:
+                                    pdf_handle = pymupdf.Document(stream=mf , filetype="pdf")
+                                except Exception as e:
+                                    log(f"×    【{input_locate_path}】 作为PDF打开时失败，详情：{e}")
+                                    log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                    transfer_file(input_locate_path, transfer_locate_path, mf)
+                                    error_list.append(copy(input_locate_path))
+                                    progress_completed += 1
+                                    continue
+                                
+                                try:
+                                    with pdf_handle:
+                                        # 创建和PDF同名（带扩展名）的输出文件夹
+                                        # 之所以不去掉扩展名，是因为输入和输出文件夹的目录结构是相同的
+                                        # 输入文件夹下难保会出现和pdf文件同名（无pdf扩展名）的文件夹，在输入文件夹下，是不冲突且合理的
+                                        # 但在输出文件夹，这种情况下如果pdf的输出文件夹去掉了“.pdf”扩展名，就会产生冲突
+                                        os.mkdir(pdf_output_main_dir)
+                                        
+                                        if pdf_mode in {0,1}:
+                                            
+                                            inside_img_output_path = f"{pdf_output_main_dir}\\PDF中嵌入的图片"
+                                            os.mkdir(inside_img_output_path)
+                                            
+                                            
+                                            pic_num = 1
+                                            for xref in range(1 , pdf_handle.xref_length()):
+                                                
+                                                try:
+                                                    img_dict = pdf_handle.extract_image(xref)
+                                                except:
+                                                    continue
+                                                
+                                                # 是图片、有文件数据、数据不重复
+                                                if (file_data := img_dict.get('image',None)) \
+                                                and (crc_value := crc32c.crc32c(file_data)) not in crc32_set:
+                                                    crc32_set.add(crc_value)
+                                                    ext = img_dict.get("ext","")
+                                                    
+                                                    del img_dict # 已经没用了
+                                                    
+                                                    try:
+                                                        file_data = io.BytesIO(file_data)
+                                                        with file_data:
+                                                            if pdf_inside_pic_direct_output:
+                                                                pre_allocate_write_output_file(f"{inside_img_output_path}\\{str(pic_num).zfill(3)}.{ext}"  ,  file_data)
+                                                            else:
+                                                                with Image.open(file_data) as im:
+                                                                    if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                                                        # 需要转换，原来的文件数据没用了
+                                                                        # 确保im完全加载，然后关掉file_data节省内存
+                                                                        im.load()
+                                                                        # load方法自动关掉了file_data，这边只是重复确认一下
+                                                                        file_data.close()
+                                                                        # 将im中的图片保存
+                                                                        pic_save(f"{inside_img_output_path}\\{str(pic_num).zfill(3)}.{target_ext}" , preserve_exif=perserve_common_pic_exif)
+                                                                    else:
+                                                                        # 如果在这行注释的地方用im.close()，file_data也会被关掉，所以没太好的方法，暂时留着吧
+                                                                        pre_allocate_write_output_file(f"{inside_img_output_path}\\{str(pic_num).zfill(3)}.{ext}"  ,  file_data)
+                                                    except:
+                                                        continue
+                                                    else:
+                                                        pic_num += 1
+                                                
+                                                else:
+                                                    del file_data , img_dict
+                                            
+                                            if pic_num == 1:#无图片成功导出
+                                                try_remove(inside_img_output_path)
+                                        
+                                        if pdf_mode in {0,2}:
+                                            inside_page_render_output_path = f"{pdf_output_main_dir}\\PDF页面渲染图"
+                                            os.mkdir(inside_page_render_output_path)
+                                            mat = pymupdf.Matrix(pdf_page_render_zoom_ratio , pdf_page_render_zoom_ratio)
+                                            
+                                            page_num = 1
+                                            for page in pdf_handle.pages():
+                                                try:
+                                                    page_pixmap = page.get_pixmap(matrix=mat)
+                                                    with io.BytesIO() as tmp_io:
+                                                        # 生成的页面渲染图中不带透明信息，除非上面一步get_pixmap()传入了“alpha=True”
+                                                        # 详情请看：https://pymupdf.readthedocs.io/en/latest/page.html#Page.get_pixmap
+                                                        # 应该大概率不含exif信息（包括旋转信息）
+                                                        page_pixmap.pil_save(fp=tmp_io , format=target_format , quality=jpg_quality , subsampling=jpg_subsample_option)
+                                                        pre_allocate_write_output_file(f"{inside_page_render_output_path}\\{str(page_num).zfill(3)}.{target_ext}" , tmp_io)
+                                                except:
+                                                    continue
+                                                else:
+                                                    page_num += 1
+                                            
+                                            if page_num == 1:#无页面成功渲染
+                                                try_remove(inside_page_render_output_path)
+                                
+                                
+                                except Exception as e:
+                                    try_remove(pdf_output_main_dir)# 删除可能输出的问题残留
+                                    log(f"×    PDF文件【{input_locate_path}】转换格式失败，详情：{e}")
+                                    log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                    transfer_file(input_locate_path, transfer_locate_path, mf)
+                                    error_list.append(copy(input_locate_path))
+                                    progress_completed += 1
+                                    continue
+                                else:
+                                    log(f"√    PDF文件【{input_locate_path}】转换成功")
+                            
+                            else:
+                                log(f"◎      PDF被设置为不转换，跳过【{input_locate_path}】")
+                                log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                transfer_file(input_locate_path, transfer_locate_path, mf)
+                                excluded_list.append(copy(input_locate_path))
+                        
+                        
+                        # livp格式是zip压缩包
+                        elif mimetype == "application/zip":
+                            
+                            zip_extra_path = os.path.dirname(output_locate_base) # file是相对路径，所以这里不能用：zip_extra_path = f"{output_folder_name}"
+                            
+                            try:
+                                zfh = zipfile.ZipFile(mf)
+                                z_object_list = zfh.infolist()
+                                z_file_info_list = [i for i in z_object_list if i.is_file()] # 排除zip里的文件夹
+                                log(f"▷        【{input_locate_path}】 满足zip文件条件，可能是livp文件")
+                            except Exception as e:
+                                try:
+                                    zfh.close()
+                                except:
+                                    pass
+                                log(f"×    【{input_locate_path}】 作为压缩包打开处理过程中出错，详情：{e}")
+                                log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                transfer_file(input_locate_path, transfer_locate_path, mf)
+                                error_list.append(copy(input_locate_path))
+                                progress_completed += 1
+                                continue
+                            
+                            with zfh:
+                                
+                                # 如果压缩包里存在1个文件夹，其下2个文件，“.namelist()”中个数就会是3个
+                                if len(z_file_info_list) == len(z_object_list) == 2:
+                                    
+                                    log(f"▷▷       【{input_locate_path}】 满足livp文件数量为2个的特征")
+                                    
+                                    if convert_livp:
+                                        successfully_processed_zfile_num = 0
+                                        for z_info in z_file_info_list:
+                                            z_file = z_info.filename
+                                            z_name = os.path.splitext(z_file)[0]
+                                            z_output_locate_path = f"{zip_extra_path}\\{z_name}.{target_ext}"
+                                            z_copy_out_locate_path = f"{zip_extra_path}\\{z_file}"
+                                            
+                                            try:
+                                                f = zfh.open(z_info)
+                                            except Exception as e:
+                                                log(f"×    【{input_locate_path} ⇨ {z_file}】 作为压缩包下的文件打开出错，已跳过，详情：{e}")
+                                                continue
+                                            
+                                            with f:
+                                                
+                                                try:
+                                                    mimetype = get_type(f)
+                                                except Exception as e:
+                                                    log(f"×    【{input_locate_path} ⇨ {z_file}】 获取mimetype出错，详情：{e}")
+                                                    continue
+                                                
+                                                
+                                                if ("image/" in mimetype) or ( (tmp := (os.path.splitext(z_file)[1][1:]).lower()) in {"jpg","jpeg","heic","heif","png","bmp","tiff"} ):
+                                                    
+                                                    if livp_direct_output:
+                                                        try:
+                                                            pre_allocate_write_output_file(z_copy_out_locate_path , f)
+                                                        except Exception as e:
+                                                            try_remove(z_copy_out_locate_path)# 删除可能输出的问题残留
+                                                            log(f"  × × ×      【{input_locate_path} ⇨ {z_file}】 直接输出失败，详情：{e}")
+                                                            continue
+                                                        else:
+                                                            transfer_modify_time(z_info , z_copy_out_locate_path)
+                                                            log(f"▷▷▷▷      【{input_locate_path} ⇨ {z_file}】 直接输出成功 √")
+                                                    
+                                                    else:
+                                                        try:
+                                                            im = Image.open(f)
+                                                        except Exception as e:
+                                                            log(f"▷▷▷▷ × × ×【{input_locate_path} ⇨ {z_file}】 作为图片打开时出错，详情：{e}")
+                                                            continue
+                                                        
+                                                        with im:
+                                                            
+                                                            if (im.format not in runtime_excluded_format_set) and has_only_one_frame(im):
+                                                                log(f"▷▷▷       【{input_locate_path} ⇨ {z_file}】 需要转换图片格式")
+                                                                
+                                                                try:
+                                                                    # 需要转换，原来的文件数据没用了
+                                                                    # 确保im完全加载，然后关掉f节省内存
+                                                                    im.load()
+                                                                    # load方法自动关掉了f，这边只是重复确认一下
+                                                                    f.close()
+                                                                    # 将im中的图片保存
+                                                                    pic_save(z_output_locate_path , preserve_exif=perserve_common_pic_exif)
+                                                                
+                                                                except Exception as e:
+                                                                    try_remove(z_output_locate_path)# 删除可能输出的问题残留
+                                                                    log(f"  × × ×      【{input_locate_path} ⇨ {z_file}】 转换格式失败，详情：{e}")
+                                                                    continue
+                                                                else:
+                                                                    log(f"▷▷▷▷      【{input_locate_path} ⇨ {z_file}】 转换成功 √")
+                                                            
+                                                            else:
+                                                                log(f"▷▷▷       【{input_locate_path} ⇨ {z_file}】 的格式被排除或含有多个帧，不转换，原样导出")
+                                                                
+                                                                try:
+                                                                    # 如果在这行注释的地方用im.close()，f也会被关掉，所以没太好的方法，暂时留着吧
+                                                                    pre_allocate_write_output_file(z_copy_out_locate_path , f)
+                                                                except Exception as e:
+                                                                    try_remove(z_copy_out_locate_path)# 删除可能输出的问题残留
+                                                                    log(f"  × × ×      【{input_locate_path} ⇨ {z_file}】 提取失败，详情：{e}")
+                                                                    continue
+                                                                else:
+                                                                    transfer_modify_time(z_info , z_copy_out_locate_path)
+                                                                    log(f"▷▷▷▷      【{input_locate_path} ⇨ {z_file}】 导出成功 √")
+                                                
+                                                
+                                                
+                                                elif ("video/" in mimetype) or (tmp in {"mov","m4v","mp4","ts","mkv","flv"}):
+                                                    
+                                                    log(f"▷▷▷       【{input_locate_path} ⇨ {z_file}】 为livp文件附带视频片段，原样导出")
+                                                    
+                                                    try:
+                                                        pre_allocate_write_output_file(z_copy_out_locate_path , f)
+                                                    except Exception as e:
+                                                        try_remove(z_copy_out_locate_path)# 删除可能输出的问题残留
+                                                        log(f"  × × ×      【{input_locate_path} ⇨ {z_file}】 提取失败，详情：{e}")
+                                                        continue
+                                                    else:
+                                                        transfer_modify_time(z_info , z_copy_out_locate_path)
+                                                        log(f"▷▷▷▷      【{input_locate_path} ⇨ {z_file}】 导出成功 √")
+                                                
+                                                else:
+                                                    log(f"▶▶▶       【{input_locate_path} ⇨ {z_file}】 为其他文件")
+                                                
+                                                successfully_processed_zfile_num += 1
+                                        
+                                        if successfully_processed_zfile_num != 2:
+                                            log(f"×    【{input_locate_path}】 作为压缩包打开处理过程中出错，保持原样硬链接或拷贝到输出目录")
+                                            transfer_file(input_locate_path, transfer_locate_path, mf)
+                                            error_list.append(f"{input_locate_path}")
+                                    
+                                    else:
+                                        log(f"◎        LIVP格式图片被设置为不转换，跳过【{input_locate_path}】")
+                                        log("▷▷    保持原样硬链接或拷贝到输出目录")
+                                        transfer_file(input_locate_path, transfer_locate_path, mf)
+                                        excluded_list.append(copy(input_locate_path))
+                                
+                                else:
+                                    log(f"▷▷       【{input_locate_path}】 为普通压缩包，保持原样硬链接或拷贝到输出目录")
+                                    transfer_file(input_locate_path, transfer_locate_path, mf)
+                                    excluded_list.append(copy(input_locate_path))
+                        
+                        
+                        
+                        
+                        else:
+                            log(f"▷        【{input_locate_path}】 不是图片文件，保持原样硬链接或拷贝到输出目录")
+                            transfer_file(input_locate_path, transfer_locate_path, mf)
+                            excluded_list.append(copy(input_locate_path))
+                    
+                    
+                    progress_completed += 1
+            
+            
+            # 其他特殊情况
+            else:
+                log("❓　特殊路径类型，可能为符号链接或者其他特殊对象，软件不支持")
+                error_list.append(copy(target_path))
+            
+            log("\n"*5)
+            
+            # 展示错误
+            if error_list:
+                log("❌　❌　❌　出错的文件有：\n　　　　" + ("\n　　　　".join(error_list)))
+                log("\n"*5)
+            # 展示转移中出错的文件
+            if transfer_error_list:
+                log("❌　❌　❌　跳过或出错后，在转移过程中出错的文件有：\n　　　　" + ("\n　　　　".join(transfer_error_list)))
+                log("\n"*5)
+            # 展示整理碎片时出错的文件
+            if defrag_error_list:
+                log("⚠　⚠　⚠　调用exiftool后，整理碎片失败的文件有：\n　　　　" + ("\n　　　　".join(defrag_error_list)))
+                log("\n"*5)
+            # 展示降级为拷贝后成功复制的文件
+            if down_to_copy_list:
+                log("⚠　⚠　⚠　降级为拷贝后，成功复制的文件有：\n　　　　" + ("\n　　　　".join(down_to_copy_list)))
+                log("\n"*5)
+            # 展示跳过的文件
+            if excluded_list:
+                log("✏　✏　✏　跳过的文件有：\n　　　　" + ("\n　　　　".join(excluded_list)))
+                log("\n"*5)
+        
+        
+        log("＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝"+"\n"*15)
+    
+    
+    
+    except Exception as e:
+        
+        handle_critical_error(f"程序遭遇未预料到的错误，\n详情：{e}，\n程序终止")
+
+
+
+
+# 合并日志
+try:
+    concat_log()
+except Exception as e :
+    handle_critical_error(f"合并日志出错，\n详情：{e}，\n程序终止" , log_handle_present=False)
+
+print("★★★  处理完成  ★★★\n\n\n")
+in_progress = False # 告诉进度展示线程该结束了
+try:
+    close_up()
+except:
+    pass
+
+
+print("\n\n==========     【已退出】     ==========\n\n")
+sys.exit(0)
+

@@ -1,0 +1,30 @@
+[4 byte offset]
+66 74 79 70 33 67 70	 	[4 byte offset]
+ftyp3gp
+3GG, 3GP, 3G2	 	3rd Generation Partnership Project 3GPP multimedia files
+
+
+[4 byte offset]
+66 74 79 70 4D 34 56 20	 	[4 byte offset]
+ftypM4V
+FLV, M4V	 	ISO Media, MPEG v4 system, or iTunes AVC-LC file
+
+[4 byte offset]
+66 74 79 70 4D 53 4E 56	 	[4 byte offset]
+ftypMSNV
+MP4	 	MPEG-4 video file
+
+[4 byte offset]
+66 74 79 70 69 73 6F 6D	 	[4 byte offset]
+ftypisom
+MP4	 	ISO Base Media file (MPEG-4) v1
+
+[4 byte offset]
+66 74 79 70 6D 70 34 32	 	[4 byte offset]
+ftypmp42
+M4V	 	MPEG-4 video|QuickTime file
+
+[4 byte offset]
+66 74 79 70 71 74 20 20	 	[4 byte offset]
+ftypqt
+MOV	 	QuickTime movie file
