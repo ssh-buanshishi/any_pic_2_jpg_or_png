@@ -1,0 +1,1 @@
+﻿双击运行“【pyinstaller】打包命令.py”即可，建议pyinstaller使用【requirements.txt】指定的版本
