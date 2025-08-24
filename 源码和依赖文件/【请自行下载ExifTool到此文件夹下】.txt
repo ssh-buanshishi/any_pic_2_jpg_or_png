@@ -1,2 +1,0 @@
-请自行到：exiftool.org下载组件ExifTool，放置到此文件夹下的"ExifTool"文件夹中（"ExifTool"文件夹展开后有：exiftool_files、exiftool(-k).exe、README.txt三项），
-并将“exiftool(-k).exe”重命名为“exiftool.exe”。
