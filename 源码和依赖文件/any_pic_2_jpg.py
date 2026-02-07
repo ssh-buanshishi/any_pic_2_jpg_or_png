@@ -400,7 +400,7 @@ from psd_tools import PSDImage
 # 读取PDF的库，以及用于PDF中图片去重（多个xref指向同一个图片的数据）的crc32校验库
 import pymupdf, crc32c
 # Pillow
-from PIL import Image , ImageOps
+from PIL import Image , ImageOps , TiffImagePlugin
 # 挂在Pillow上的jpls（JPEG-LS,JPEG-Lossless）编解码插件（https://pypi.org/project/pillow-jpls/）
 # PS：战未来的“屠龙宝刀”😅
 import pillow_jpls
@@ -1161,19 +1161,27 @@ def pic_save(output_path: Optional[str] = "" , preserve_exif: Optional[bool] = T
         im = im.convert('RGB')
     
     if preserve_exif:
+        # 既然设定为保存exif，尝试用pillow获取exif是肯定都要的
+        exif_info = im.getexif()
+        # 对TIFF要进行特殊处理，参见：https://github.com/python-pillow/Pillow/discussions/6927
+        # 否则保存时要报【NotImplementedError: multistrip support not yet implemented】
+        if im.format == "TIFF":
+            with suppress(Exception): del exif_info[TiffImagePlugin.STRIPOFFSETS]
+        
         if output_to_memory_io:
             ret_io = io.BytesIO()
             # 保存，参数帮助：https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg-saving
-            im.save(fp=ret_io , format=target_format , quality=jpg_quality , subsampling=jpg_subsample_option , exif=im.getexif() )
+            im.save(fp=ret_io , format=target_format , quality=jpg_quality , subsampling=jpg_subsample_option , exif=exif_info )
             # 返回装载数据的io供exiftool使用
             return ret_io
         else:
             with io.BytesIO() as tmp_io:
                 # 保存，参数帮助：https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg-saving
-                im.save(fp=tmp_io , format=target_format , quality=jpg_quality , subsampling=jpg_subsample_option , exif=im.getexif() )
+                im.save(fp=tmp_io , format=target_format , quality=jpg_quality , subsampling=jpg_subsample_option , exif=exif_info )
                 pre_allocate_write_output_file(output_path , tmp_io)
             # 无返回值
             return None
+    
     else:
         if output_to_memory_io:
             ret_io = io.BytesIO()
