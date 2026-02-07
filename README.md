@@ -1,6 +1,7 @@
 # any_pic_2_jpg_or_png
 
 【2026年2月7日】版本小升级为v1.13.2
+
 根据：https://github.com/python-pillow/Pillow/discussions/6927 ，
 改进了tiff获取exif的方式，防止报错，现在tiff文件转换应该不会再报错了。
 
